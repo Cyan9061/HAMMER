@@ -1,0 +1,1 @@
+不要这样修改，我希望你在syftr/utils/utils_getAPI.py中对batch_predict进行修改，让它兼容gaochao的api。

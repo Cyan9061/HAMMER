@@ -1,0 +1,86 @@
+# syftr/rerankers/integrations.py
+
+from typing import List, Optional
+from llama_index.core.postprocessor.types import BaseNodePostprocessor
+from llama_index.core.schema import NodeWithScore, QueryBundle
+from syftr.logger import logger
+
+try:
+    from flashrank.rerank import RerankRequest, Reranker
+    FLASHRANK_AVAILABLE = True
+except ImportError:
+    FLASHRANK_AVAILABLE = False
+
+class FlashRankPostprocessor(BaseNodePostprocessor):
+    """一个适配器，用于将 FlashRank 集成到 LlamaIndex 的后处理流程中。"""
+    def __init__(self, model_name: str = "flashrank/ms-marco-MiniLM-L-12-v2", top_n: int = 5):
+        super().__init__()
+        if not FLASHRANK_AVAILABLE:
+            raise ImportError("FlashRank not available. Please install: pip install flashrank")
+        self._reranker = Reranker(model_name=model_name)
+        self._top_n = top_n
+
+    def _postprocess_nodes(
+        self,
+        nodes: List[NodeWithScore],
+        query_bundle: Optional[QueryBundle] = None,
+    ) -> List[NodeWithScore]:
+        if query_bundle is None:
+            raise ValueError("Query bundle is required for reranking.")
+        if not nodes:
+            return []
+
+        passages_to_rerank = [
+            {"id": node.node_id, "text": node.get_content()} for node in nodes
+        ]
+        request = RerankRequest(query=query_bundle.query_str, passages=passages_to_rerank)
+        reranked_results = self._reranker.rerank(request)
+
+        node_map = {node.node_id: node for node in nodes}
+        final_nodes = []
+        for result in reranked_results:
+            node_id = result["id"]
+            if node_id in node_map:
+                node = node_map[node_id]
+                node.score = result["score"]
+                final_nodes.append(node)
+        
+        return final_nodes[:self._top_n]
+
+
+class SentenceTransformerReranker(BaseNodePostprocessor):
+    """使用SentenceTransformers的CrossEncoder进行重排序"""
+    
+    def __init__(self, model, top_n: int = 5):
+        super().__init__()
+        self.model = model
+        self._top_n = top_n
+    
+    def _postprocess_nodes(
+        self,
+        nodes: List[NodeWithScore],
+        query_bundle: Optional[QueryBundle] = None,
+    ) -> List[NodeWithScore]:
+        if query_bundle is None:
+            raise ValueError("Query bundle is required for reranking.")
+        if not nodes:
+            return []
+        
+        try:
+            # 准备输入对
+            pairs = [(query_bundle.query_str, node.get_content()) for node in nodes]
+            
+            # 获取重排序分数 - 禁用内部进度条
+            scores = self.model.predict(pairs, show_progress_bar=False)
+            
+            # 更新节点分数
+            for i, node in enumerate(nodes):
+                node.score = float(scores[i])
+            
+            # 按分数排序并返回top_n
+            sorted_nodes = sorted(nodes, key=lambda x: x.score, reverse=True)
+            return sorted_nodes[:self._top_n]
+            
+        except Exception as e:
+            logger.error(f"SentenceTransformer reranking failed: {e}")
+            return nodes[:self._top_n]  # 回退到原始顺序
