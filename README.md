@@ -82,7 +82,7 @@ HAMMER achieves **state-of-the-art** across 8 RAG benchmarks:
 
 | Dataset                                     | F1 ↑            | EM ↑   | Tokens ↓ | Time ↓    |
 | ------------------------------------------- | --------------- | ------ | -------- | --------- |
-| 2WikiMultiHopQA                             | **+15.2%**      | +20.0% | 9× fewer | 9× faster |
+| 2WikiMultiHopQA                             | **+15.2%**      | **+20.0%** | 9× fewer | 9× faster |
 | HotpotQA                                    | +13.7%          | +14.8% | 8× fewer | 7× faster |
 | MedQA                                       | +6.1%           | +17.0% | 5× fewer | 6× faster |
 | FiQA / ELI5 / QuaRTZ / PopQA / WebQuestions | Consistent SOTA |        |          |           |
