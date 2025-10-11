@@ -151,11 +151,6 @@ HAMMER is **the first** framework to:
 * Offer **provable theoretical guarantees** in query selection
 * Deliver **human-like, interpretable optimization** for LLM-based systems
 
-🧾 **Accepted at SIGMOD 2026**, HAMMER represents a milestone in automated RAG system design.
-
-
-
-
 ---
 
 ## 🧭 Final Words
