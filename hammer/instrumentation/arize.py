@@ -1,11 +1,22 @@
 from llama_index.core.instrumentation import get_dispatcher
-from openinference.instrumentation import OITracer, TraceConfig
-from openinference.instrumentation.llama_index._handler import EventHandler
-from openinference.instrumentation.llama_index.version import __version__
-from opentelemetry import trace as trace_api
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk import trace as trace_sdk
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+try:
+    from openinference.instrumentation import OITracer, TraceConfig
+    from openinference.instrumentation.llama_index._handler import EventHandler
+    from openinference.instrumentation.llama_index.version import __version__
+    from opentelemetry import trace as trace_api
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk import trace as trace_sdk
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+except ImportError:  # pragma: no cover - optional tracing extras
+    OITracer = None  # type: ignore[assignment]
+    TraceConfig = None  # type: ignore[assignment]
+    EventHandler = None  # type: ignore[assignment]
+    __version__ = "unavailable"
+    trace_api = None  # type: ignore[assignment]
+    OTLPSpanExporter = None  # type: ignore[assignment]
+    trace_sdk = None  # type: ignore[assignment]
+    SimpleSpanProcessor = None  # type: ignore[assignment]
 
 from hammer.configuration import cfg
 
@@ -16,6 +27,19 @@ def instrument_arize(endpoint: str = cfg.instrumentation.otel_endpoint) -> None:
 
     Also compatible with OTEL tracing, eg. otel-collector
     """
+    if not all(
+        [
+            OITracer,
+            TraceConfig,
+            EventHandler,
+            trace_api,
+            OTLPSpanExporter,
+            trace_sdk,
+            SimpleSpanProcessor,
+        ]
+    ):
+        return
+
     tracer_provider = trace_sdk.TracerProvider()
     tracer_provider.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(endpoint)))
 

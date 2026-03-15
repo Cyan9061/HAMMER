@@ -28,12 +28,18 @@ class EnhancedGPTSimulationEvaluator:
     def __init__(self, api_key: Optional[str] = None, api_base: Optional[str] = None, 
                  graph_memory: Optional[GraphMemoryRAGMCTS] = None,
                  model_name: str = "Qwen/Qwen2.5-72B-Instruct-128K"):
-        # 使用提供的凭据或默认值
-        api_key = os.getenv("OPENAI_KB_API_KEY", "")#
-        api_base = "https://api.siliconflow.cn/v1"#
-        
+        # 使用显式传参，必要时回退到知识库专用环境变量。
+        api_key = (
+            api_key
+            or os.getenv("OPENAI_KB_API_KEY")
+            or os.getenv("SILICONFLOW_API_KEY")
+            or os.getenv("SILICONFLOW_API_KEYS", "").split(",")[0]
+            or ""
+        )
+        api_base = api_base or os.getenv("OPENAI_KB_API_BASE") or "https://api.siliconflow.cn/v1"
+
         self.gpt_client = openai.OpenAI(api_key=api_key, base_url=api_base)
-        self.model_name = "Qwen/Qwen2.5-72B-Instruct-128K"
+        self.model_name = model_name
         self.use_fallback = False  # 完全禁用fallback机制
         
         self.graph_memory = graph_memory or GraphMemoryRAGMCTS()

@@ -17,7 +17,11 @@ from llama_index.core.node_parser import (
     TokenTextSplitter,
 )
 from llama_index.core.node_parser.interface import NodeParser
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+try:
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+except ImportError:  # pragma: no cover - langchain package split
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
 from transformers import AutoTokenizer
 
 from hammer.hf_endpoint_embeddings import HFEndpointEmbeddings
@@ -25,10 +29,9 @@ from hammer.huggingface_helper import get_embedding_model
 from hammer.llm import get_llm, get_tokenizer
 from hammer.logger import logger
 # from hammer.retrievers.storage import get_cached, index_cache_lock, put_cache
-from hammer.studies import ParamDict, StudyConfig
 # from hammer.tuner.core import build_splitter
 
-def build_splitter(study_config: StudyConfig, params: T.Dict[str, T.Any]) -> NodeParser:
+def build_splitter(study_config: T.Any, params: T.Dict[str, T.Any]) -> NodeParser:
     chunk_size = 2 ** int(params["splitter_chunk_exp"])
     overlap = int(params["splitter_chunk_overlap_frac"] * chunk_size)
     llm_name = params["response_synthesizer_llm"]
@@ -64,8 +67,8 @@ def build_splitter(study_config: StudyConfig, params: T.Dict[str, T.Any]) -> Nod
             raise ValueError("Invalid splitter")
 #dense_retriever
 def get_or_build_dense_index(
-    study_config: StudyConfig,
-    params: ParamDict,
+    study_config: T.Any,
+    params: T.Dict[str, T.Any],
     documents: T.List[Document],
     transforms: T.List[TransformComponent],
     embedding_model: BaseEmbedding,
@@ -132,8 +135,8 @@ def _build_dense_index(
         insert_batch_size=2048,
         show_progress=cfg.optuna.show_progress,
     )
-    del embedding_model  # 删除Python引用
-    torch.cuda.empty_cache()  # 强制释放显存
+    del embedding_model  # Drop the Python reference explicitly.
+    torch.cuda.empty_cache()  # Release cached GPU memory aggressively.
     return index, index.docstore
 
 def _build_sparse_index(
@@ -151,18 +154,30 @@ def _build_sparse_index(
     )
     docstore = StorageContext.from_defaults().docstore
     docstore.add_documents(nodes)
+    bm25_kwargs = {
+        "nodes": list(docstore.docs.values()),
+        "similarity_top_k": top_k,
+    }
     return (
-        BM25Retriever.from_defaults(
-            nodes=list(docstore.docs.values()),
-            similarity_top_k=top_k,
-            stemmer=Stemmer.Stemmer("english"),
-            language="english",
-        ),
+        _create_bm25_retriever(bm25_kwargs),
         docstore,
     )
 
+
+def _create_bm25_retriever(bm25_kwargs: T.Dict[str, T.Any]) -> BaseRetriever:
+    """Handle signature drift across llama-index BM25 retriever versions."""
+    try:
+        return BM25Retriever.from_defaults(
+            **bm25_kwargs,
+            stemmer=Stemmer.Stemmer("english"),
+            language="english",
+        )
+    except TypeError:
+        logger.warning("BM25Retriever.from_defaults no longer accepts stemmer/language; falling back to minimal args.")
+        return BM25Retriever.from_defaults(**bm25_kwargs)
+
 def build_rag_retriever(
-    study_config: StudyConfig, params: ParamDict
+    study_config: T.Any, params: T.Dict[str, T.Any]
 ) -> T.Tuple[BaseRetriever, BaseDocumentStore]:
     logger.info(f"Building retriever for {params=}")
     logger.debug(f"Study config: {study_config.model_config=}")
@@ -194,29 +209,29 @@ def build_rag_retriever(
     if rag_method in ["dense", "hybrid"]:
         embedding_model_name = str(params["rag_embedding_model"])
         
-        # 🔧 修复CUDA设备检测：使用正确的设备号并确保CUDA初始化
+        # Use the logical CUDA device id and initialize the CUDA context safely.
         import os
         import torch
         
-        # 安全的CUDA内存检查函数
+        # Safe CUDA memory probe used only for debugging.
         def safe_cuda_memory_check():
             try:
                 if not torch.cuda.is_available():
-                    print("⚠️ CUDA不可用，跳过GPU内存检查")
+                    print("WARNING: CUDA is unavailable; skipping GPU memory check")
                     return
                     
                 if os.environ.get('CUDA_VISIBLE_DEVICES'):
-                    # 有CUDA_VISIBLE_DEVICES环境变量时，使用逻辑设备0
+                    # When CUDA_VISIBLE_DEVICES is set, PyTorch renumbers visible devices.
                     device_id = 0
                 else:
-                    # 没有环境变量时，使用默认的设备7
+                    # Otherwise, keep using the default logical device.
                     device_id = 0
                 
-                # 确保设备ID有效
+                # Clamp to a valid device id.
                 if device_id >= torch.cuda.device_count():
-                    device_id = 0  # 回退到设备0
+                    device_id = 0
                 
-                # 确保CUDA上下文已初始化
+                # Make sure the CUDA context exists before querying memory.
                 torch.cuda.set_device(device_id)
                 torch.cuda.init()
                 
@@ -225,9 +240,9 @@ def build_rag_retriever(
                 print(f"GPU {device_id}: Allocated = {allocated:.2f} MB | Reserved = {reserved:.2f} MB")
                 
             except Exception as e:
-                print(f"⚠️ 无法获取GPU内存信息: {e}")
+                print(f"WARNING: Failed to read GPU memory info: {e}")
         
-        # 执行安全的CUDA内存检查
+        # Run the CUDA memory probe before loading the embedding model.
         safe_cuda_memory_check()
    
         embedding_model, _ = get_embedding_model(
@@ -238,7 +253,7 @@ def build_rag_retriever(
             use_hf_endpoint_models=study_config.optimization.use_hf_embedding_models,
         )
         
-        # 再次执行安全的CUDA内存检查
+        # Run it again after the model is loaded.
         safe_cuda_memory_check()
             
         assert embedding_model is not None
@@ -281,7 +296,7 @@ def build_rag_retriever(
         "llm": get_llm("gpt-4o-mini"),  # Not used without query decomposition enabled
         "mode": FUSION_MODES(params["rag_fusion_mode"]),
         "use_async": False,
-        "verbose": False,  # 关闭query decomposition的verbose输出
+        "verbose": False,  # Disable verbose query-decomposition output.
         "similarity_top_k": top_k,
         "num_queries": 1,
         "retriever_weights": retriever_weights,
@@ -299,14 +314,14 @@ def build_rag_retriever(
         # Get query decomp params
         query_decomposition_num_queries = params["rag_query_decomposition_num_queries"]
         query_decomposition_llm_name = str(params["rag_query_decomposition_llm_name"])
-        # 🔑 修复：使用配置的LLM实例（已配置硅基流动API），避免Settings.llm回退到OpenAI
-        # 注意：实际查询分解由BatchLLMCaller在optimized_rag_prompt_builder.py中处理
-        # 这里提供LLM实例只是为了满足QueryFusionRetriever的初始化要求
+        # Use the configured LLM instance so QueryFusionRetriever does not fall back to OpenAI.
+        # Actual query decomposition is handled by BatchLLMCaller in optimized_rag_prompt_builder.py.
+        # The LLM instance is passed here only to satisfy QueryFusionRetriever initialization.
         query_decomposition_llm = get_llm(query_decomposition_llm_name)
         # Add query decomp params and retriever
         fusion_retriever_params.update(
             **{
-                "llm": query_decomposition_llm,  # 使用硅基流动API的LLM实例，避免OpenAI回退错误
+                "llm": query_decomposition_llm,
                 "num_queries": query_decomposition_num_queries,
             }
         )
@@ -315,7 +330,7 @@ def build_rag_retriever(
     return fusion_retriever, docstore
 
 def build_dummy_retriever(
-    study_config: StudyConfig,
+    study_config: T.Any,
 ) -> T.Tuple[BaseRetriever, BaseDocumentStore]:
     """Builds a dummy retriever that returns all documents in the corpus."""
     logger.info("Building dummy retriever that returns all documents")

@@ -7,9 +7,9 @@ with the existing RAG optimization system.
 import typing as T
 from pathlib import Path
 import sys
+from llama_index.core.bridge.pydantic import PrivateAttr
 from llama_index.core.postprocessor.types import BaseNodePostprocessor
 from llama_index.core.schema import NodeWithScore, QueryBundle
-from llama_index.core.postprocessor import LLMRerank
 from hammer.llm import LLMs, get_llm
 from hammer.logger import logger
 
@@ -19,11 +19,11 @@ try:
     # Note: This requires fixing internal imports in user's Rerank framework
     from hammer.Rerank.RerankFactory import METHOD_MAP
     from hammer.Schema.DocumentSchema import Document, Question, Context, Answer
-    logger.info("✅ Successfully imported user's Rerank framework")
+    logger.info("Successfully imported the user Rerank framework")
     USER_RERANK_AVAILABLE = True
 except ImportError as e:
-    logger.info(f"ℹ️ User's Rerank framework not available, using fallback mode: {e}")
-    logger.info("💡 To enable enhanced rerankers, please fix internal imports in Rerank framework")
+    logger.info("User Rerank framework unavailable; using fallback mode: %s", e)
+    logger.info("Enable enhanced rerankers by fixing internal imports in the Rerank framework")
     METHOD_MAP = {}
     USER_RERANK_AVAILABLE = False
     
@@ -50,20 +50,26 @@ class UserRerankAdapter(BaseNodePostprocessor):
     This bridges the gap between user's Document/Context schema and LlamaIndex's NodeWithScore.
     """
     
+    _reranker_name: str = PrivateAttr()
+    _model_name: str | None = PrivateAttr()
+    _top_n: int = PrivateAttr()
+    _kwargs: T.Dict[str, T.Any] = PrivateAttr(default_factory=dict)
+    _reranker: T.Any = PrivateAttr(default=None)
+
     def __init__(self, reranker_name: str, model_name: str = None, top_n: int = 5, **kwargs):
         super().__init__()
-        # 保存参数但不初始化reranker，避免字段访问错误
+        # Store configuration first and initialize lazily to avoid field access issues.
         self._reranker_name = reranker_name.lower()
         self._model_name = model_name
         self._top_n = top_n
         self._kwargs = kwargs
         self._reranker = None
         
-        # 延迟初始化reranker
+        # Delay initialization until object state is ready.
         self._initialize_reranker()
         
     def _initialize_reranker(self):
-        """延迟初始化用户的reranker实例"""
+        """Initialize the user reranker lazily."""
         try:
             if not USER_RERANK_AVAILABLE:
                 raise ValueError(f"User's Rerank framework not available. Please check dependencies.")
@@ -71,11 +77,10 @@ class UserRerankAdapter(BaseNodePostprocessor):
             if self._reranker_name not in METHOD_MAP:
                 raise ValueError(f"Unknown reranker: {self._reranker_name}. Available: {list(METHOD_MAP.keys())}")
             
-            # 🔑 修复：使用用户的Reranking类而不是直接实例化具体的reranker类
-            # 这确保了HF_PRE_DEFIND_MODELS映射系统被正确使用
+            # Use the framework-level Reranking entrypoint so predefined model mapping works.
             from hammer.Rerank.Reranking import Reranking
             
-            # Create reranker through user's Reranking class
+            # Create reranker through the user's Reranking class.
             init_params = {
                 'method': self._reranker_name,
             }
@@ -83,25 +88,29 @@ class UserRerankAdapter(BaseNodePostprocessor):
             if self._model_name and self._model_name != "default":
                 init_params['model_name'] = self._model_name
             
-            # 只添加支持的参数，避免unexpected keyword argument错误
+            # Only forward supported parameters to avoid unexpected keyword errors.
             supported_params = ['device', 'batch_size', 'api_key']
             for param_name in supported_params:
                 if param_name in self._kwargs:
                     init_params[param_name] = self._kwargs[param_name]
                 
-            # 使用用户的Reranking类，这会自动处理HF_PRE_DEFIND_MODELS映射
+            # Reranking handles the HF_PRE_DEFIND_MODELS mapping internally.
             self._reranker = Reranking(**init_params)
-            logger.info(f"✅ Successfully initialized {self._reranker_name} reranker with model {self._model_name}")
+            logger.info(
+                "Initialized reranker %s with model %s",
+                self._reranker_name,
+                self._model_name,
+            )
             
         except Exception as e:
-            logger.error(f"❌ Failed to initialize {self._reranker_name} reranker: {e}")
+            logger.error("Failed to initialize reranker %s: %s", self._reranker_name, e)
             self._reranker = None
             raise
 
     def _convert_to_user_format(self, nodes: T.List[NodeWithScore], query: str) -> Document:
         """Convert LlamaIndex nodes to user's Document format"""
         question = Question(query)
-        # Create empty Answer object since we don't have answers from retrieval
+        # Create an empty Answer object because retrieval does not produce answers.
         answers = Answer([])  
         contexts = []
         
@@ -117,7 +126,7 @@ class UserRerankAdapter(BaseNodePostprocessor):
     
     def _convert_from_user_format(self, document: Document, original_nodes: T.List[NodeWithScore]) -> T.List[NodeWithScore]:
         """Convert user's reranked results back to LlamaIndex format"""
-        # Create mapping from content to original nodes
+        # Map content back to the original retrieved nodes.
         content_to_node = {}
         for node in original_nodes:
             content_to_node[node.get_content()] = node
@@ -126,7 +135,7 @@ class UserRerankAdapter(BaseNodePostprocessor):
         for context in document.reorder_contexts[:self._top_n]:
             original_node = content_to_node.get(context.text)
             if original_node:
-                # Update score if available
+                # Preserve reranker scores when available.
                 if hasattr(context, 'score'):
                     original_node.score = context.score
                 reranked_nodes.append(original_node)
@@ -144,22 +153,22 @@ class UserRerankAdapter(BaseNodePostprocessor):
             return []
         
         if self._reranker is None:
-            logger.error(f"❌ Reranker not initialized for {self._reranker_name}")
-            return nodes[:self._top_n]  # Fallback to original order
+            logger.error("Reranker %s is not initialized", self._reranker_name)
+            return nodes[:self._top_n]  # Fall back to the original order.
 
         try:
-            # Convert to user's format
+            # Convert to the user's schema.
             document = self._convert_to_user_format(nodes, query_bundle.query_str)
             
-            # Apply user's reranker
+            # Apply reranking.
             reranked_documents = self._reranker.rank([document])
             
-            # Convert back to LlamaIndex format
+            # Convert back to LlamaIndex nodes.
             return self._convert_from_user_format(reranked_documents[0], nodes)
             
         except Exception as e:
-            logger.error(f"❌ Reranking failed with {self._reranker_name}: {e}")
-            return nodes[:self._top_n]  # Fallback to original order
+            logger.error("Reranking failed for %s: %s", self._reranker_name, e)
+            return nodes[:self._top_n]  # Fall back to the original order.
 
 def build_reranker_postprocessor(params: T.Dict[str, T.Any]) -> T.Optional[BaseNodePostprocessor]:
     """
@@ -169,25 +178,27 @@ def build_reranker_postprocessor(params: T.Dict[str, T.Any]) -> T.Optional[BaseN
     if not params.get("reranker_enabled"):
         return None
         
-    # Get reranker configuration
-    reranker_name = params.get("reranker_llm_name") or params.get("reranker_model", "flashrank")
+    # Read reranker configuration from either legacy or current parameter names.
+    reranker_name = (
+        params.get("reranker_llm_name")
+        or params.get("reranker_llm")
+        or params.get("reranker_model", "flashrank")
+    )
     reranker_top_k = params.get("reranker_top_k", 5)
     
-    logger.info(f"🔧 Building reranker: {reranker_name}, top_k={reranker_top_k}")
+    logger.info("Building reranker %s with top_k=%s", reranker_name, reranker_top_k)
     
-    # Handle LLM-based rerankers (backward compatibility)
+    # LLM-based rerankers are handled by the prompt-builder path.
     if reranker_name in LLMs:
-        try:
-            from llama_index.core.postprocessor import LLMRerank
-            llm = get_llm(reranker_name)
-            return LLMRerank(top_n=reranker_top_k, llm=llm)
-        except Exception as e:
-            logger.error(f"❌ Failed to create LLMRerank with {reranker_name}: {e}")
-            return None
+        logger.info(
+            "ℹ️ LLM reranker '%s' will be handled by the prompt builder path; skipping serial LLMRerank.",
+            reranker_name,
+        )
+        return None
     
-    # Handle user's enhanced rerankers
+    # Handle enhanced rerankers backed by the user's framework.
     reranker_mapping = {
-        # Map config names to user's reranker names
+        # Map config-level names to the framework's reranker ids.
         'ColbertRanker': 'colbert_ranker',
         'colbert_ranker': 'colbert_ranker',
         'FlashRank': 'flashrank',
@@ -216,10 +227,10 @@ def build_reranker_postprocessor(params: T.Dict[str, T.Any]) -> T.Optional[BaseN
     user_reranker_name = reranker_mapping.get(reranker_name)
     if user_reranker_name and user_reranker_name in METHOD_MAP and USER_RERANK_AVAILABLE:
         try:
-            # Get model name from predefined models or params
+            # Resolve model name from config or a reranker-specific default.
             model_name = params.get("reranker_model_name")
             if not model_name or model_name == "default":
-                # Set reasonable defaults based on reranker type using user's predefined models
+                # Use framework-compatible defaults for each reranker family.
                 model_defaults = {
                     'flashrank': 'ms-marco-MiniLM-L-12-v2',
                     'transformer_ranker': 'mxbai-rerank-xsmall', 
@@ -229,45 +240,48 @@ def build_reranker_postprocessor(params: T.Dict[str, T.Any]) -> T.Optional[BaseN
                     'listt5': 'listt5-base', 
                     'twolar': 'twolar-xl',
                     'monobert_ranker': 'monobert-large',
-                    'inranker': 'inranker-base',  # 🔑 修复：使用用户预定义的简化名称
+                    'inranker': 'inranker-base',
                     'echorank': 'flan-t5-large',
                     'upr': 't5-base'
                 }
                 model_name = model_defaults.get(user_reranker_name)
             
-            # 🔧 智能GPU分配：使用huggingface_helper的GPU选择逻辑
+            # Reuse the project GPU-selection logic when available.
             try:
                 from hammer.tuner.main_tuner_mcts import DEVICE_ID
                 optimal_device = f"cuda:{DEVICE_ID}"
-                logger.info(f"🎯 专用reranker '{user_reranker_name}' 使用智能分配的GPU: {optimal_device}")
+                logger.info("Specialized reranker %s will use %s", user_reranker_name, optimal_device)
                 device = params.get("reranker_device", optimal_device)
             except ImportError:
                 device = params.get("reranker_device", "cuda")
-                logger.warning(f"⚠️ 无法导入GPU选择逻辑，使用默认设备: {device}")
+                logger.warning("Could not import GPU selection logic; using %s", device)
             
             return UserRerankAdapter(
                 reranker_name=user_reranker_name,
-                model_name=model_name or "default",  # 提供默认值避免None
+                model_name=model_name or "default",
                 top_n=reranker_top_k,
                 device=device,
                 batch_size=params.get("reranker_batch_size", 16)
             )
         except Exception as e:
-            logger.error(f"❌ Failed to create {user_reranker_name}: {e}")
+            logger.error("Failed to create enhanced reranker %s: %s", user_reranker_name, e)
     elif user_reranker_name and not USER_RERANK_AVAILABLE:
-        logger.warning(f"⚠️ User's Rerank framework not available for {reranker_name}. Falling back to original factory.")
+        logger.warning(
+            "User Rerank framework is unavailable for %s; falling back to the original factory.",
+            reranker_name,
+        )
     
-    # Fallback to original factory for unknown rerankers
+    # Fall back to the original factory for unknown rerankers.
     try:
         from hammer.rerankers.factory import get_reranker
         return get_reranker(reranker_name, reranker_top_k)
     except Exception as e:
-        logger.error(f"❌ All reranker creation attempts failed: {e}")
+        logger.error("All reranker creation attempts failed: %s", e)
         return None
 
 # For backward compatibility
 def get_enhanced_reranker(name: str, top_k: int) -> T.Optional[BaseNodePostprocessor]:
-    """Enhanced version of get_reranker that supports user's framework"""
+    """Compatibility wrapper for the enhanced reranker factory."""
     params = {
         "reranker_enabled": True,
         "reranker_llm_name": name,

@@ -101,7 +101,11 @@ class OptimizedRAGPromptBuilder:
             if hasattr(self.flow, 'params') and self.flow.params:
                 reranker_enabled = self.flow.params.get('reranker_enabled', False)
                 if reranker_enabled:
-                    reranker_llm = self.flow.params.get('reranker_llm', 'flashrank')
+                    reranker_llm = (
+                        self.flow.params.get('reranker_llm')
+                        or self.flow.params.get('reranker_llm_name')
+                        or 'flashrank'
+                    )
                     reranker_top_k = self.flow.params.get('reranker_top_k', 5)
                     
                     # 🚀 关键改进：使用真正的批处理reranker

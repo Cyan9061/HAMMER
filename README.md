@@ -103,6 +103,25 @@ HAMMER achieves **state-of-the-art** across 8 RAG benchmarks:
 
 ---
 
+## ⚙️ Setup
+
+Install dependencies from the repository root:
+
+```bash
+pip install -r requirements.txt
+```
+
+Configure the API credentials required by the current MCTS pipeline.
+You can export them in your shell or place them in `.env`:
+
+```bash
+export OPENAI_API_KEY=...
+export SILICONFLOW_API_KEYS=...
+export OPENAI_KB_API_KEY=...
+export OPENAI_KB_API_BASE=...
+```
+
+
 ## 🧭 Example Command
 
 Run memory-guided optimization on 2WikiMultiHopQA:
@@ -129,16 +148,19 @@ python -m hammer.tuner.main_tuner_mcts \
 ## 📊 Visualization Tools
 
 ```bash
-python Experiment/query_selection/visualizations/scatter_time.py
-python Experiment/query_selection/visualizations/scatter_token.py
+python Experiment/query_selection/visualize_dissimilarity_graph.py
 ```
 
-Generate insights directly in Python:
+Additional query-selection and visualization workflows are available under
+`Experiment/query_selection/`, and generated figures are written under
+`Experiment/query_selection/visualizations/`.
+
+Inspect graph-memory state directly in Python:
 
 ```python
 from hammer.mcts.kb_manager.graph_memory import GraphMemoryRAGMCTS
 memory = GraphMemoryRAGMCTS()
-insights = memory.get_insights_for_dataset("HotpotQA")
+print(memory.get_memory_stats())
 ```
 
 ---

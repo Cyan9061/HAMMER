@@ -501,22 +501,22 @@ class ConfigLayer:
             return 'other'
     
     def _update_config_relationships(self, new_config: ConfigNode):
-        """更新配置关系图"""
-        logger.info(f"🔗 ===== 开始更新配置关系图 =====")
-        logger.info(f"🔗 为新配置建立关系: {new_config.config_id}")
-        logger.info(f"🔗 当前已有配置数量: {len(self.nodes)}")
+        """Update the configuration relationship graph."""
+        logger.info("===== Starting config-relationship graph update =====")
+        logger.info("Creating relationships for new config %s", new_config.config_id)
+        logger.info("Existing config count: %s", len(self.nodes))
         
         self.config_graph.add_node(new_config.config_id, **asdict(new_config))
-        logger.info(f"✅ 配置节点已添加到图中")
+        logger.info("Added config node to the graph")
         
-        # 查找相似配置并建立边
+        # Find similar configs and connect them with edges.
         relationships_added = 0
-        logger.info(f"🔍 开始相似度分析...")
+        logger.info("Starting similarity analysis")
         
         for existing_id, existing_config in self.nodes.items():
             if existing_id != new_config.config_id:
                 similarity = self._compute_config_similarity(new_config, existing_config)
-                logger.info(f"   与 {existing_id[:8]}... 的相似度: {similarity:.3f}")
+                logger.info("   Similarity to %s...: %.3f", existing_id[:8], similarity)
                 
                 if similarity > 0.5:
                     performance_delta = new_config.avg_f1_score - existing_config.avg_f1_score
@@ -527,9 +527,13 @@ class ConfigLayer:
                         performance_delta=performance_delta
                     )
                     relationships_added += 1
-                    logger.info(f"   ✅ 建立关系: 相似度={similarity:.3f}, 性能差异={performance_delta:+.3f}")
+                    logger.info(
+                        "   Added relationship: similarity=%.3f, performance_delta=%+.3f",
+                        similarity,
+                        performance_delta,
+                    )
                     
-                    # 分析差异的关键参数
+                    # Summarize key parameter differences.
                     key_diffs = []
                     for key in ['retrieval_method', 'template_name', 'reranker_enabled', 'hyde_enabled']:
                         val1 = new_config.config_params.get(key)
@@ -537,13 +541,13 @@ class ConfigLayer:
                         if val1 != val2:
                             key_diffs.append(f"{key}: {val2}->{val1}")
                     if key_diffs:
-                        logger.info(f"     关键差异: {', '.join(key_diffs)}")
+                        logger.info("     Key differences: %s", ", ".join(key_diffs))
                 else:
-                    logger.debug(f"   相似度过低，未建立关系")
+                    logger.debug("   Similarity too low; no relationship added")
         
-        logger.info(f"🔗 关系建立完成: 新增 {relationships_added} 条关系")
-        logger.info(f"🔗 总关系数: {self.config_graph.number_of_edges()}")
-        logger.info(f"🔗 ===== 配置关系图更新完成 =====")
+        logger.info("Relationship update completed: %s new edges", relationships_added)
+        logger.info("Total relationship count: %s", self.config_graph.number_of_edges())
+        logger.info("===== Config-relationship graph update finished =====")
     
     def _compute_config_similarity(self, config1: ConfigNode, config2: ConfigNode) -> float:
         """
@@ -774,72 +778,76 @@ class GraphMemoryRAGMCTS:
         self.config_layer = ConfigLayer(str(self.storage_path / "config"))
         self.insight_layer = InsightLayer(str(self.storage_path / "insight"))
         
-        logger.info(f"🚀 Initialized Graph Memory System at {self.storage_path}")
-        logger.info(f"📊 Current state: {len(self.query_layer.nodes)} QAs, "
-                   f"{len(self.config_layer.nodes)} configs, {len(self.insight_layer.nodes)} insights")
+        logger.info("Initialized Graph Memory System at %s", self.storage_path)
+        logger.info(
+            "Current state: %s QAs, %s configs, %s insights",
+            len(self.query_layer.nodes),
+            len(self.config_layer.nodes),
+            len(self.insight_layer.nodes),
+        )
         
     def save_all_layers(self):
-        """保存所有三层到磁盘"""
-        logger.info(f"💾 ===== 开始保存三层图记忆系统 =====")
-        logger.info(f"📊 保存前统计: {self.get_memory_stats()}")
+        """Save all three layers to disk."""
+        logger.info("===== Saving all three graph-memory layers =====")
+        logger.info("Pre-save stats: %s", self.get_memory_stats())
         
         try:
-            # 保存Query Layer
-            logger.info(f"💾 保存Query Layer到 {self.query_layer.storage_path}")
+            # Save Query Layer.
+            logger.info("Saving Query Layer to %s", self.query_layer.storage_path)
             qa_count_before = len(self.query_layer.nodes)
             self.query_layer._save_to_disk()
-            logger.info(f"✅ Query Layer已保存: {qa_count_before} QA executions")
+            logger.info("Saved Query Layer: %s QA executions", qa_count_before)
             
-            # 保存Config Layer
-            logger.info(f"💾 保存Config Layer到 {self.config_layer.storage_path}")
+            # Save Config Layer.
+            logger.info("Saving Config Layer to %s", self.config_layer.storage_path)
             config_count_before = len(self.config_layer.nodes)
             relationship_count_before = self.config_layer.config_graph.number_of_edges()
             self.config_layer._save_to_disk()
-            logger.info(f"✅ Config Layer已保存: {config_count_before} configurations, {relationship_count_before} relationships")
+            logger.info("Saved Config Layer: %s configurations, %s relationships", config_count_before, relationship_count_before)
             
-            # 保存Insight Layer 
-            logger.info(f"💾 保存Insight Layer到 {self.insight_layer.storage_path}")
+            # Save Insight Layer.
+            logger.info("Saving Insight Layer to %s", self.insight_layer.storage_path)
             insight_count_before = len(self.insight_layer.nodes)
             insight_relationship_count_before = self.insight_layer.insight_graph.number_of_edges()
             self.insight_layer._save_to_disk()
-            logger.info(f"✅ Insight Layer已保存: {insight_count_before} insights, {insight_relationship_count_before} relationships")
+            logger.info("Saved Insight Layer: %s insights, %s relationships", insight_count_before, insight_relationship_count_before)
             
             logger.info(f"💾 All three layers saved to {self.storage_path}")
-            logger.info(f"💾 ===== 三层图记忆系统保存完成 =====")
+            logger.info("===== Finished saving all three graph-memory layers =====")
         except Exception as e:
             logger.error(f"❌ Failed to save all layers: {e}")
-            logger.error(f"❌ 保存路径: {self.storage_path}")
-            logger.error(f"❌ Query Layer路径: {self.query_layer.storage_path}")
-            logger.error(f"❌ Config Layer路径: {self.config_layer.storage_path}")
-            logger.error(f"❌ Insight Layer路径: {self.insight_layer.storage_path}")
+            logger.error("Storage path: %s", self.storage_path)
+            logger.error("Query Layer path: %s", self.query_layer.storage_path)
+            logger.error("Config Layer path: %s", self.config_layer.storage_path)
+            logger.error("Insight Layer path: %s", self.insight_layer.storage_path)
             raise
 
     def add_complete_evaluation(self, config_params: Dict[str, Any],  
                                 qa_executions: List[QAExecutionNode]) -> ConfigNode:
         """Add complete evaluation results with enhanced validation"""
         
-        # 生成config_id
-        logger.info(f"开始生成config_id: {config_params}")
+        # Generate config_id.
+        logger.info("Generating config_id from params: %s", config_params)
         standardized_config_id = self.config_layer._generate_config_id(config_params)
         
-        # 🔥 确保所有QA执行都有正确的config_id
+        # Ensure every QA execution carries the standardized config id.
         for qa_execution in qa_executions:
             if qa_execution.config_id != standardized_config_id:
                 logger.warning(f"⚠️ Correcting QA {qa_execution.qa_id} config_id: "
                             f"{qa_execution.config_id} -> {standardized_config_id}")
                 qa_execution.config_id = standardized_config_id
         
-        # 1. 添加到query layer
+        # 1. Add records to the query layer.
         for i, qa_execution in enumerate(qa_executions):
             try:
                 self.query_layer.add_qa_execution(qa_execution)
             except Exception as e:
                 logger.error(f"❌ Error adding QA execution at index {i}: {qa_execution.qa_id}")
                 logger.error(f"Error details: {e}")
-                # 跳过有问题的QA记录，继续处理其他记录
+                # Skip malformed QA records and continue.
                 continue
         self.query_layer._save_to_disk()
-        # 2. 添加到config layer
+        # 2. Add/update the config layer.
         config_node = self.config_layer.add_config_evaluation(config_params, qa_executions)
         
         logger.info(f"✅ Added complete evaluation: config_id={config_node.config_id}, "

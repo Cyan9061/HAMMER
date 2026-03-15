@@ -8,14 +8,24 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from functools import cached_property
 import llama_index.core.instrumentation as instrument
-from llama_index.agent.introspective import (
-    IntrospectiveAgentWorker,
-    ToolInteractiveReflectionAgentWorker,
-)
-from llama_index.agent.introspective.reflective.tool_interactive_reflection import (
-    StoppingCallable,
-)
-from llama_index.agent.lats import LATSAgentWorker
+
+try:
+    from llama_index.agent.introspective import (
+        IntrospectiveAgentWorker,
+        ToolInteractiveReflectionAgentWorker,
+    )
+    from llama_index.agent.introspective.reflective.tool_interactive_reflection import (
+        StoppingCallable,
+    )
+except ImportError:  # pragma: no cover - optional agent extras
+    IntrospectiveAgentWorker = None  # type: ignore[assignment]
+    ToolInteractiveReflectionAgentWorker = None  # type: ignore[assignment]
+    StoppingCallable = T.Any  # type: ignore[assignment]
+
+try:
+    from llama_index.agent.lats import LATSAgentWorker
+except ImportError:  # pragma: no cover - optional agent extras
+    LATSAgentWorker = None  # type: ignore[assignment]
 from llama_index.core import (
     PromptTemplate,
     QueryBundle,
@@ -129,7 +139,7 @@ class Flow:
         prompt = self.get_prompt(query)
         response: CompletionResponse = self.response_synthesizer_llm.complete(prompt)
         
-        # 🔥 记录token使用到全局统计
+        # Record token usage in the shared tracker.
         from hammer.utils.simple_token_tracker import record_llm_response
         from hammer.llm import get_llm_name
         llm_name = get_llm_name(self.response_synthesizer_llm)
@@ -156,7 +166,7 @@ class Flow:
             prompt
         )
         
-        # 🔥 记录token使用到全局统计
+        # Record token usage in the shared tracker.
         from hammer.utils.simple_token_tracker import record_llm_response
         from hammer.llm import get_llm_name
         llm_name = get_llm_name(self.response_synthesizer_llm)
@@ -183,8 +193,14 @@ class RetrieverFlow(Flow):
         node_postprocessors: T.List[BaseNodePostprocessor] = []
         if self.additional_context_num_nodes > 0:
             from hammer.logger import logger
-            logger.info(f"🔗 [RetrieverOnlyFlow] 启用Additional Context功能: 上下文节点数={self.additional_context_num_nodes}")
-            logger.info(f"🔗 [RetrieverOnlyFlow] Additional Context配置: 前后各{int(ceil(self.additional_context_num_nodes / 2))}个节点, mode=both")
+            logger.info(
+                "[RetrieverOnlyFlow] Additional context enabled with %s nodes",
+                self.additional_context_num_nodes,
+            )
+            logger.info(
+                "[RetrieverOnlyFlow] Additional context config: %s nodes before and after, mode=both",
+                int(ceil(self.additional_context_num_nodes / 2)),
+            )
             assert self.docstore is not None
             node_postprocessors.append(
                 PrevNextNodePostprocessor(
@@ -193,7 +209,7 @@ class RetrieverFlow(Flow):
                     mode="both",
                 )
             )
-            logger.info(f"✅ [RetrieverOnlyFlow] Additional Context后处理器已添加到pipeline")
+            logger.info("[RetrieverOnlyFlow] Added additional-context postprocessor to the pipeline")
         response_synthesizer = get_response_synthesizer(
             llm=self.response_synthesizer_llm,
             response_mode=ResponseMode.COMPACT,
@@ -266,8 +282,8 @@ class RAGFlow(Flow):
     def query_engine(self) -> BaseQueryEngine:
         node_postprocessors: T.List[BaseNodePostprocessor] = []
 
-        # 2. 替换原有的 Reranker 逻辑
-        # ----- 旧逻辑 START -----
+        # Replace the legacy reranker path with the enhanced factory.
+        # ----- Legacy logic start -----
         # if self.reranker_llm is not None:
         #     assert self.reranker_top_k, (
         #         "Reranker enabled, need reranker_top_k param set"
@@ -275,18 +291,24 @@ class RAGFlow(Flow):
         #     node_postprocessors.append(
         #         LLMRerank(top_n=self.reranker_top_k, llm=self.reranker_llm)
         #     )
-        # ----- 旧逻辑 END -----
+        # ----- Legacy logic end -----
 
-        # +++++ 新逻辑 START +++++
+        # +++++ New logic start +++++
         if self.params and self.params.get("reranker_enabled"):
             reranker = build_reranker_postprocessor(self.params)
             if reranker:
                 node_postprocessors.append(reranker)
-        # +++++ 新逻辑 END +++++
+        # +++++ New logic end +++++
         if self.additional_context_num_nodes > 0:
             from hammer.logger import logger
-            logger.info(f"🔗 [RAGFlow] 启用Additional Context功能: 上下文节点数={self.additional_context_num_nodes}")
-            logger.info(f"🔗 [RAGFlow] Additional Context配置: 前后各{int(ceil(self.additional_context_num_nodes / 2))}个节点, mode=both")
+            logger.info(
+                "[RAGFlow] Additional context enabled with %s nodes",
+                self.additional_context_num_nodes,
+            )
+            logger.info(
+                "[RAGFlow] Additional context config: %s nodes before and after, mode=both",
+                int(ceil(self.additional_context_num_nodes / 2)),
+            )
             assert self.docstore is not None
             node_postprocessors.append(
                 PrevNextNodePostprocessor(
@@ -295,7 +317,7 @@ class RAGFlow(Flow):
                     mode="both",
                 )
             )
-            logger.info(f"✅ [RAGFlow] Additional Context后处理器已添加到pipeline")
+            logger.info("[RAGFlow] Added additional-context postprocessor to the pipeline")
         response_synthesizer = get_response_synthesizer(
             llm=self.response_synthesizer_llm,
             response_mode=ResponseMode.COMPACT,
@@ -336,7 +358,7 @@ class RAGFlow(Flow):
         return await self.query_engine.aretrieve(QueryBundle(query))
 
     def _generate(
-        self, query: str, invocation_id: str
+        self, query: str, invocation_id: str | None = None
     ) -> T.Tuple[CompletionResponse, float]:
         start_time = time.perf_counter()
         response = self.query_engine.query(query)
@@ -354,7 +376,7 @@ class RAGFlow(Flow):
         return completion_response, duration
 
     async def _agenerate(
-        self, query: str, invocation_id: str
+        self, query: str, invocation_id: str | None = None
     ) -> T.Tuple[CompletionResponse, float]:
         start_time = time.perf_counter()
         response = await self.query_engine.aquery(query)

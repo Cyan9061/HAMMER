@@ -9,25 +9,53 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import tiktoken
-from anthropic import AnthropicVertex, AsyncAnthropicVertex
 from google.cloud.aiplatform_v1beta1.types import content
 from google.oauth2 import service_account
 from llama_index.core.base.llms.types import LLMMetadata, MessageRole
 from llama_index.core.llms.function_calling import FunctionCallingLLM
 from llama_index.core.llms.llm import LLM
-from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding
-from llama_index.llms.anthropic import Anthropic
-from llama_index.llms.azure_inference import AzureAICompletionsModel
-from llama_index.llms.azure_openai import AzureOpenAI
-from llama_index.llms.cerebras import Cerebras
 from llama_index.llms.openai_like import OpenAILike
-from llama_index.llms.vertex import Vertex
+
+try:
+    from anthropic import AnthropicVertex, AsyncAnthropicVertex
+except ImportError:  # pragma: no cover - optional provider
+    AnthropicVertex = AsyncAnthropicVertex = None  # type: ignore[assignment]
+
+try:
+    from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding
+except ImportError:  # pragma: no cover - optional provider
+    AzureOpenAIEmbedding = None  # type: ignore[assignment]
+
+try:
+    from llama_index.llms.anthropic import Anthropic
+except ImportError:  # pragma: no cover - optional provider
+    Anthropic = None  # type: ignore[assignment]
+
+try:
+    from llama_index.llms.azure_inference import AzureAICompletionsModel
+except ImportError:  # pragma: no cover - optional provider
+    AzureAICompletionsModel = None  # type: ignore[assignment]
+
+try:
+    from llama_index.llms.azure_openai import AzureOpenAI
+except ImportError:  # pragma: no cover - optional provider
+    AzureOpenAI = None  # type: ignore[assignment]
+
+try:
+    from llama_index.llms.cerebras import Cerebras
+except ImportError:  # pragma: no cover - optional provider
+    Cerebras = None  # type: ignore[assignment]
+
+try:
+    from llama_index.llms.vertex import Vertex
+except ImportError:  # pragma: no cover - optional provider
+    Vertex = None  # type: ignore[assignment]
 
 from transformers import AutoTokenizer
-# 在函数外部先缓存 tokenizer，避免重复加载
-_qwen_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B")
+# Cache the tokenizer lazily to avoid remote downloads at import time.
+_qwen_tokenizer = None
 
-# 导入自定义的SiliconFlow LLM
+# Import the custom SiliconFlow LLM wrapper.
 from hammer.siliconflow_llm import create_siliconflow_llm, get_api_keys
 from mypy_extensions import DefaultNamedArg
 
@@ -47,10 +75,36 @@ from hammer.logger import logger
 
 # Anthropic._get_all_kwargs = _get_all_kwargs  # type: ignore
 
+
+def _get_qwen_tokenizer():
+    global _qwen_tokenizer
+    if _qwen_tokenizer is None:
+        try:
+            _qwen_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B")
+        except Exception as exc:
+            logger.warning("Failed to load Qwen tokenizer, falling back to cl100k_base: %s", exc)
+            return None
+    return _qwen_tokenizer
+
 def _scale(
     context_window_length: int, factor: float = NON_OPENAI_CONTEXT_WINDOW_FACTOR
 ) -> int:
     return int(context_window_length * factor)
+
+
+def _safe_construct_optional(
+    dependency: T.Any,
+    label: str,
+    factory: T.Callable[[], T.Any],
+):
+    if dependency is None:
+        logger.debug("Optional dependency for %s is unavailable; skipping.", label)
+        return None
+    try:
+        return factory()
+    except Exception as exc:
+        logger.debug("Skipping optional component %s: %s", label, exc)
+        return None
 
 if (hf_token := cfg.hf_embeddings.api_key.get_secret_value()) != "NOT SET":
     os.environ["HF_TOKEN"] = hf_token
@@ -77,86 +131,118 @@ LOCAL_MODELS = (
     else {}
 )
 
-AZURE_GPT35_TURBO = AzureOpenAI(
-    model="gpt-3.5-turbo",
-    deployment_name="gpt-35",
-    api_key=cfg.azure_oai.api_key.get_secret_value(),
-    azure_endpoint=str(cfg.azure_oai.api_url),
-    api_version="2024-06-01",
-    temperature=0,
-    max_retries=0,
-    additional_kwargs={"user": "hammer"},
+AZURE_GPT35_TURBO = _safe_construct_optional(
+    AzureOpenAI,
+    "AZURE_GPT35_TURBO",
+    lambda: AzureOpenAI(
+        model="gpt-3.5-turbo",
+        deployment_name="gpt-35",
+        api_key=cfg.azure_oai.api_key.get_secret_value(),
+        azure_endpoint=str(cfg.azure_oai.api_url),
+        api_version="2024-06-01",
+        temperature=0,
+        max_retries=0,
+        additional_kwargs={"user": "hammer"},
+    ),
 )
 
-AZURE_GPT4O_MINI = AzureOpenAI(
-    model="gpt-4o-mini",
-    deployment_name="gpt-4o-mini",
-    api_key=cfg.azure_oai.api_key.get_secret_value(),
-    azure_endpoint=str(cfg.azure_oai.api_url),
-    api_version="2024-06-01",
-    temperature=0,
-    max_retries=0,
-    additional_kwargs={"user": "hammer"},
+AZURE_GPT4O_MINI = _safe_construct_optional(
+    AzureOpenAI,
+    "AZURE_GPT4O_MINI",
+    lambda: AzureOpenAI(
+        model="gpt-4o-mini",
+        deployment_name="gpt-4o-mini",
+        api_key=cfg.azure_oai.api_key.get_secret_value(),
+        azure_endpoint=str(cfg.azure_oai.api_url),
+        api_version="2024-06-01",
+        temperature=0,
+        max_retries=0,
+        additional_kwargs={"user": "hammer"},
+    ),
 )
 
-AZURE_GPT4O_STD = AzureOpenAI(
-    model="gpt-4o",
-    deployment_name="gpt-4o",
-    api_key=cfg.azure_oai.api_key.get_secret_value(),
-    azure_endpoint=str(cfg.azure_oai.api_url),
-    api_version="2024-06-01",
-    temperature=0,
-    max_retries=0,
-    additional_kwargs={"user": "hammer"},
+AZURE_GPT4O_STD = _safe_construct_optional(
+    AzureOpenAI,
+    "AZURE_GPT4O_STD",
+    lambda: AzureOpenAI(
+        model="gpt-4o",
+        deployment_name="gpt-4o",
+        api_key=cfg.azure_oai.api_key.get_secret_value(),
+        azure_endpoint=str(cfg.azure_oai.api_url),
+        api_version="2024-06-01",
+        temperature=0,
+        max_retries=0,
+        additional_kwargs={"user": "hammer"},
+    ),
 )
 
-AZURE_o1 = AzureOpenAI(
-    model="o1",
-    deployment_name="o1",
-    api_key=cfg.azure_oai.api_key.get_secret_value(),
-    azure_endpoint=str(cfg.azure_oai.api_url),
-    api_version="2024-12-01-preview",
-    temperature=0,
-    max_retries=0,
-    additional_kwargs={"user": "hammer"},
+AZURE_o1 = _safe_construct_optional(
+    AzureOpenAI,
+    "AZURE_o1",
+    lambda: AzureOpenAI(
+        model="o1",
+        deployment_name="o1",
+        api_key=cfg.azure_oai.api_key.get_secret_value(),
+        azure_endpoint=str(cfg.azure_oai.api_url),
+        api_version="2024-12-01-preview",
+        temperature=0,
+        max_retries=0,
+        additional_kwargs={"user": "hammer"},
+    ),
 )
 
-AZURE_o3_MINI = AzureOpenAI(
-    model="o3-mini",
-    deployment_name="o3-mini",
-    api_key=cfg.azure_oai.api_key.get_secret_value(),
-    azure_endpoint=str(cfg.azure_oai.api_url),
-    api_version="2024-12-01-preview",
-    temperature=0,
-    max_retries=0,
-    additional_kwargs={"user": "hammer"},
+AZURE_o3_MINI = _safe_construct_optional(
+    AzureOpenAI,
+    "AZURE_o3_MINI",
+    lambda: AzureOpenAI(
+        model="o3-mini",
+        deployment_name="o3-mini",
+        api_key=cfg.azure_oai.api_key.get_secret_value(),
+        azure_endpoint=str(cfg.azure_oai.api_url),
+        api_version="2024-12-01-preview",
+        temperature=0,
+        max_retries=0,
+        additional_kwargs={"user": "hammer"},
+    ),
 )
 
-AZURE_GPT35_TURBO_1106 = AzureOpenAI(
-    model="gpt-35-turbo",
-    deployment_name="gpt-35-turbo",
-    api_key=cfg.azure_oai.api_key.get_secret_value(),
-    azure_endpoint=str(cfg.azure_oai.api_url),
-    api_version="2024-06-01",
-    temperature=0,
-    max_retries=0,
-    additional_kwargs={"user": "hammer"},
+AZURE_GPT35_TURBO_1106 = _safe_construct_optional(
+    AzureOpenAI,
+    "AZURE_GPT35_TURBO_1106",
+    lambda: AzureOpenAI(
+        model="gpt-35-turbo",
+        deployment_name="gpt-35-turbo",
+        api_key=cfg.azure_oai.api_key.get_secret_value(),
+        azure_endpoint=str(cfg.azure_oai.api_url),
+        api_version="2024-06-01",
+        temperature=0,
+        max_retries=0,
+        additional_kwargs={"user": "hammer"},
+    ),
 )
 
-AZURE_TEXT_EMBEDDING_ADA_002 = AzureOpenAIEmbedding(
-    model=os.getenv("DEFAULT_EMBEDDING_MODEL_ALT", ""),
-    deployment_name=os.getenv("DEFAULT_EMBEDDING_MODEL_ALT", ""),
-    api_key=cfg.azure_oai.api_key.get_secret_value(),
-    azure_endpoint=str(cfg.azure_oai.api_url),
-    api_version="2023-03-15-preview",
+AZURE_TEXT_EMBEDDING_ADA_002 = _safe_construct_optional(
+    AzureOpenAIEmbedding,
+    "AZURE_TEXT_EMBEDDING_ADA_002",
+    lambda: AzureOpenAIEmbedding(
+        model=os.getenv("DEFAULT_EMBEDDING_MODEL_ALT", ""),
+        deployment_name=os.getenv("DEFAULT_EMBEDDING_MODEL_ALT", ""),
+        api_key=cfg.azure_oai.api_key.get_secret_value(),
+        azure_endpoint=str(cfg.azure_oai.api_url),
+        api_version="2023-03-15-preview",
+    ),
 )
 
-AZURE_TEXT_EMBEDDING_3_LARGE = AzureOpenAIEmbedding(
-    model=os.getenv("DEFAULT_EMBEDDING_MODEL", ""),
-    deployment_name=os.getenv("DEFAULT_EMBEDDING_MODEL", ""),
-    api_key=cfg.azure_oai.api_key.get_secret_value(),
-    azure_endpoint=str(cfg.azure_oai.api_url),
-    api_version="2024-06-01",
+AZURE_TEXT_EMBEDDING_3_LARGE = _safe_construct_optional(
+    AzureOpenAIEmbedding,
+    "AZURE_TEXT_EMBEDDING_3_LARGE",
+    lambda: AzureOpenAIEmbedding(
+        model=os.getenv("DEFAULT_EMBEDDING_MODEL", ""),
+        deployment_name=os.getenv("DEFAULT_EMBEDDING_MODEL", ""),
+        api_key=cfg.azure_oai.api_key.get_secret_value(),
+        azure_endpoint=str(cfg.azure_oai.api_url),
+        api_version="2024-06-01",
+    ),
 )
 
 GCP_SAFETY_SETTINGS = {
@@ -171,118 +257,145 @@ try:
 except JSONDecodeError:
     GCP_CREDS = {}
 
-GCP_GEMINI_PRO = Vertex(
-    model="gemini-1.5-pro-002",
-    project=cfg.gcp_vertex.project_id,
-    credentials=service_account.Credentials.from_service_account_info(GCP_CREDS)
-    if GCP_CREDS
-    else {},
-    temperature=0,
-    safety_settings=GCP_SAFETY_SETTINGS,
-    max_tokens=8000,
-    context_window=_scale(2000000),
-    max_retries=0,
-    additional_kwargs={},
+GCP_GEMINI_PRO = _safe_construct_optional(
+    Vertex,
+    "GCP_GEMINI_PRO",
+    lambda: Vertex(
+        model="gemini-1.5-pro-002",
+        project=cfg.gcp_vertex.project_id,
+        credentials=service_account.Credentials.from_service_account_info(GCP_CREDS)
+        if GCP_CREDS
+        else {},
+        temperature=0,
+        safety_settings=GCP_SAFETY_SETTINGS,
+        max_tokens=8000,
+        context_window=_scale(2000000),
+        max_retries=0,
+        additional_kwargs={},
+    ),
 )
 
-GCP_GEMINI_FLASH = Vertex(
-    model="gemini-1.5-flash-002",
-    project=cfg.gcp_vertex.project_id,
-    credentials=service_account.Credentials.from_service_account_info(GCP_CREDS)
-    if GCP_CREDS
-    else {},
-    temperature=0,
-    safety_settings=GCP_SAFETY_SETTINGS,
-    context_window=_scale(1048000),
-    max_tokens=8000,
-    max_retries=0,
-    additional_kwargs={},
+GCP_GEMINI_FLASH = _safe_construct_optional(
+    Vertex,
+    "GCP_GEMINI_FLASH",
+    lambda: Vertex(
+        model="gemini-1.5-flash-002",
+        project=cfg.gcp_vertex.project_id,
+        credentials=service_account.Credentials.from_service_account_info(GCP_CREDS)
+        if GCP_CREDS
+        else {},
+        temperature=0,
+        safety_settings=GCP_SAFETY_SETTINGS,
+        context_window=_scale(1048000),
+        max_tokens=8000,
+        max_retries=0,
+        additional_kwargs={},
+    ),
 )
 
-GCP_GEMINI_FLASH_EXP = Vertex(
-    model="gemini-2.0-flash-lite-preview-02-05",
-    project=cfg.gcp_vertex.project_id,
-    credentials=service_account.Credentials.from_service_account_info(GCP_CREDS)
-    if GCP_CREDS
-    else {},
-    temperature=0,
-    max_tokens=8000,
-    context_window=_scale(1048000),
-    max_retries=0,
-    safety_settings=GCP_SAFETY_SETTINGS,
-    additional_kwargs={},
+GCP_GEMINI_FLASH_EXP = _safe_construct_optional(
+    Vertex,
+    "GCP_GEMINI_FLASH_EXP",
+    lambda: Vertex(
+        model="gemini-2.0-flash-lite-preview-02-05",
+        project=cfg.gcp_vertex.project_id,
+        credentials=service_account.Credentials.from_service_account_info(GCP_CREDS)
+        if GCP_CREDS
+        else {},
+        temperature=0,
+        max_tokens=8000,
+        context_window=_scale(1048000),
+        max_retries=0,
+        safety_settings=GCP_SAFETY_SETTINGS,
+        additional_kwargs={},
+    ),
 )
 
-class VertexFlashThink(Vertex):
-    def __init__(
-        self,
-        model: str = "text-bison",
-        project: T.Optional[str] = None,
-        location: T.Optional[str] = None,
-        credentials: T.Optional[T.Any] = None,
-        **kwargs,
-    ):
-        super().__init__(
-            model=model,
-            project=project,
-            location=location,
-            credentials=credentials,
+if Vertex is not None:
+    class VertexFlashThink(Vertex):
+        def __init__(
+            self,
+            model: str = "text-bison",
+            project: T.Optional[str] = None,
+            location: T.Optional[str] = None,
+            credentials: T.Optional[T.Any] = None,
             **kwargs,
-        )
+        ):
+            super().__init__(
+                model=model,
+                project=project,
+                location=location,
+                credentials=credentials,
+                **kwargs,
+            )
 
-    @property
-    def metadata(self) -> LLMMetadata:
-        return LLMMetadata(
-            num_output=self.max_tokens,
-            context_window=self.context_window,
-            is_chat_model=self._is_chat_model,
-            is_function_calling_model=False,
-            model_name=self.model,
-            system_role=(
-                MessageRole.USER if self._is_gemini else MessageRole.SYSTEM
-            ),  # Gemini does not support the default: MessageRole.SYSTEM
-        )
+        @property
+        def metadata(self) -> LLMMetadata:
+            return LLMMetadata(
+                num_output=self.max_tokens,
+                context_window=self.context_window,
+                is_chat_model=self._is_chat_model,
+                is_function_calling_model=False,
+                model_name=self.model,
+                system_role=(
+                    MessageRole.USER if self._is_gemini else MessageRole.SYSTEM
+                ),
+            )
+else:
+    VertexFlashThink = None  # type: ignore[assignment]
 
-GCP_GEMINI_FLASH_THINK_EXP = VertexFlashThink(
-    model="gemini-2.0-flash-thinking-exp-01-21",
-    project=cfg.gcp_vertex.project_id,
-    credentials=service_account.Credentials.from_service_account_info(GCP_CREDS)
-    if GCP_CREDS
-    else {},
-    temperature=0,
-    max_tokens=8000,
-    context_window=_scale(32000),
-    max_retries=0,
-    safety_settings=GCP_SAFETY_SETTINGS,
-    additional_kwargs={},
+GCP_GEMINI_FLASH_THINK_EXP = _safe_construct_optional(
+    VertexFlashThink,
+    "GCP_GEMINI_FLASH_THINK_EXP",
+    lambda: VertexFlashThink(
+        model="gemini-2.0-flash-thinking-exp-01-21",
+        project=cfg.gcp_vertex.project_id,
+        credentials=service_account.Credentials.from_service_account_info(GCP_CREDS)
+        if GCP_CREDS
+        else {},
+        temperature=0,
+        max_tokens=8000,
+        context_window=_scale(32000),
+        max_retries=0,
+        safety_settings=GCP_SAFETY_SETTINGS,
+        additional_kwargs={},
+    ),
 )
 
-GCP_GEMINI_PRO_EXP = Vertex(
-    model="gemini-2.0-pro-exp-02-05",
-    project=cfg.gcp_vertex.project_id,
-    credentials=service_account.Credentials.from_service_account_info(GCP_CREDS)
-    if GCP_CREDS
-    else {},
-    temperature=0,
-    safety_settings=GCP_SAFETY_SETTINGS,
-    max_tokens=8000,
-    context_window=_scale(1048000),
-    max_retries=0,
-    additional_kwargs={},
+GCP_GEMINI_PRO_EXP = _safe_construct_optional(
+    Vertex,
+    "GCP_GEMINI_PRO_EXP",
+    lambda: Vertex(
+        model="gemini-2.0-pro-exp-02-05",
+        project=cfg.gcp_vertex.project_id,
+        credentials=service_account.Credentials.from_service_account_info(GCP_CREDS)
+        if GCP_CREDS
+        else {},
+        temperature=0,
+        safety_settings=GCP_SAFETY_SETTINGS,
+        max_tokens=8000,
+        context_window=_scale(1048000),
+        max_retries=0,
+        additional_kwargs={},
+    ),
 )
 
-GCP_GEMINI_FLASH2 = Vertex(
-    model="gemini-2.0-flash-001",
-    project=cfg.gcp_vertex.project_id,
-    credentials=service_account.Credentials.from_service_account_info(GCP_CREDS)
-    if GCP_CREDS
-    else {},
-    temperature=0,
-    max_tokens=8000,
-    context_window=_scale(1048000),
-    max_retries=0,
-    safety_settings=GCP_SAFETY_SETTINGS,
-    additional_kwargs={},
+GCP_GEMINI_FLASH2 = _safe_construct_optional(
+    Vertex,
+    "GCP_GEMINI_FLASH2",
+    lambda: Vertex(
+        model="gemini-2.0-flash-001",
+        project=cfg.gcp_vertex.project_id,
+        credentials=service_account.Credentials.from_service_account_info(GCP_CREDS)
+        if GCP_CREDS
+        else {},
+        temperature=0,
+        max_tokens=8000,
+        context_window=_scale(1048000),
+        max_retries=0,
+        safety_settings=GCP_SAFETY_SETTINGS,
+        additional_kwargs={},
+    ),
 )
 
 # TogetherLlamaSmall = OpenAILike(
@@ -298,7 +411,7 @@ GCP_GEMINI_FLASH2 = Vertex(
 #     max_retries=0,
 # )
 
-# 🚀 使用SiliconFlow API替代本地ollama，支持高并发API key轮询
+# Use SiliconFlow-backed hosted models instead of a local Ollama runtime.
 Qwen_2_5_7b = create_siliconflow_llm(
     api_keys=get_api_keys(),
     model_name="Qwen/Qwen2.5-7B-Instruct",
@@ -308,7 +421,7 @@ Qwen_2_5_7b = create_siliconflow_llm(
     max_retries=3
 )
 
-# 🚀 新增：Qwen2-7B (旧版本) 使用硅基流动API
+# Qwen2-7B legacy variant via SiliconFlow.
 Qwen_2_7b = create_siliconflow_llm(
     api_keys=get_api_keys(),
     model_name="Qwen/Qwen2-7B-Instruct",
@@ -318,7 +431,7 @@ Qwen_2_7b = create_siliconflow_llm(
     max_retries=3
 )
 
-# 🚀 新增：Deepseek-R1-32B 使用硅基流动API
+# DeepSeek-R1-32B via SiliconFlow.
 Deepseek_R1_32b = create_siliconflow_llm(
     api_keys=get_api_keys(),
     model_name="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
@@ -328,7 +441,7 @@ Deepseek_R1_32b = create_siliconflow_llm(
     max_retries=3
 )
 
-# 🚀 新增：Qwen-72B 使用硅基流动API
+# Qwen2.5-72B via SiliconFlow.
 Qwen_2_5_72b = create_siliconflow_llm(
     api_keys=get_api_keys(),
     model_name="Qwen/Qwen2.5-72B-Instruct",
@@ -338,7 +451,7 @@ Qwen_2_5_72b = create_siliconflow_llm(
     max_retries=3
 )
 
-# 🚀 新增：GPT-4o-mini 使用自定义API base
+# GPT-4o-mini via the configured Gaochao-compatible OpenAI-like endpoint.
 GPT4o_mini = OpenAILike(
     model="gpt-4o-mini",
     api_base="https://api.ai-gaochao.cn/v1",
@@ -409,6 +522,8 @@ DRDeepseekLlama70BReasoning = DROpenAILike(
 
 def add_scoped_credentials_anthropic(anthropic_llm: Anthropic) -> Anthropic:
     """Add Google service account credentials to an Anthropic LLM"""
+    if anthropic_llm is None or AnthropicVertex is None or AsyncAnthropicVertex is None:
+        return anthropic_llm
     credentials = (
         service_account.Credentials.from_service_account_info(GCP_CREDS).with_scopes(
             ["https://www.googleapis.com/auth/cloud-platform"]
@@ -426,165 +541,200 @@ def add_scoped_credentials_anthropic(anthropic_llm: Anthropic) -> Anthropic:
     anthropic_llm._aclient = async_client
     return anthropic_llm
 
-ANTHROPIC_CLAUDE_SONNET_35 = add_scoped_credentials_anthropic(
-    Anthropic(
-        model="claude-3-5-sonnet-v2@20241022",
-        project_id=str(cfg.gcp_vertex.project_id),
-        region="us-east5",
-        temperature=0,
-    )
-)
-
-ANTHROPIC_CLAUDE_HAIKU_35 = add_scoped_credentials_anthropic(
-    Anthropic(
-        model="claude-3-5-haiku@20241022",
-        project_id=str(cfg.gcp_vertex.project_id),
-        region="us-east5",
-        temperature=0,
-    )
-)
-
-class AzureAICompletionsModelLlama(AzureAICompletionsModel):
-    def __init__(self, credential, model_name, endpoint, temperature=0):
-        super().__init__(
-            credential=credential,
-            model_name=model_name,
-            endpoint=endpoint,
-            temperature=temperature,
+ANTHROPIC_CLAUDE_SONNET_35 = _safe_construct_optional(
+    Anthropic,
+    "ANTHROPIC_CLAUDE_SONNET_35",
+    lambda: add_scoped_credentials_anthropic(
+        Anthropic(
+            model="claude-3-5-sonnet-v2@20241022",
+            project_id=str(cfg.gcp_vertex.project_id),
+            region="us-east5",
+            temperature=0,
         )
-
-    @property
-    def metadata(self):
-        return LLMMetadata(
-            context_window=120000,
-            num_output=1000,
-            is_chat_model=True,
-            is_function_calling_model=False,
-            model_name="Llama-3.3-70B-Instruct",
-        )
-
-class AzureAICompletionsModelPhi4(AzureAICompletionsModel):
-    def __init__(self, credential, model_name, endpoint, temperature=0):
-        super().__init__(
-            credential=credential,
-            model_name=model_name,
-            endpoint=endpoint,
-            temperature=temperature,
-        )
-
-    @property
-    def metadata(self):
-        return LLMMetadata(
-            context_window=14000,
-            num_output=1000,
-            is_chat_model=True,
-            is_function_calling_model=False,
-            model_name="Phi-4",
-        )
-
-class AzureAICompletionsModelR1(AzureAICompletionsModel):
-    def __init__(self, credential, model_name, endpoint, temperature=0):
-        super().__init__(
-            credential=credential,
-            model_name=model_name,
-            endpoint=endpoint,
-            temperature=temperature,
-        )
-
-    @property
-    def metadata(self):
-        return LLMMetadata(
-            context_window=120000,
-            num_output=8000,
-            is_chat_model=True,
-            is_function_calling_model=False,
-            model_name="Deepseek-R1",
-        )
-
-AZURE_LLAMA33_70B = AzureAICompletionsModelLlama(
-    credential=cfg.azure_inference_llama33.api_key.get_secret_value(),  # type: ignore
-    model_name=str(cfg.azure_inference_llama33.model_name),  # type: ignore
-    endpoint=(  # type: ignore
-        "https://"
-        + str(cfg.azure_inference_llama33.default_deployment)
-        + "."
-        + str(cfg.azure_inference_llama33.region_name)
-        + ".models.ai.azure.com"
     ),
-    temperature=0,  # type: ignore
 )
 
-AZURE_PHI4 = AzureAICompletionsModelPhi4(
-    credential=cfg.azure_inference_phi4.api_key.get_secret_value(),  # type: ignore
-    model_name=str(cfg.azure_inference_phi4.model_name),  # type: ignore
-    endpoint=(  # type: ignore
-        "https://"
-        + str(cfg.azure_inference_phi4.default_deployment)
-        + "."
-        + str(cfg.azure_inference_phi4.region_name)
-        + ".models.ai.azure.com"
-    ),
-    temperature=0,  # type: ignore
-)
-
-AZURE_R1 = AzureAICompletionsModelR1(
-    credential=cfg.azure_inference_r1.api_key.get_secret_value(),  # type: ignore
-    model_name=str(cfg.azure_inference_r1.model_name),  # type: ignore
-    endpoint=(  # type: ignore
-        "https://"
-        + str(cfg.azure_inference_r1.default_deployment)
-        + "."
-        + str(cfg.azure_inference_r1.region_name)
-        + ".models.ai.azure.com"
-    ),
-    temperature=0,  # type: ignore
-)
-
-class AzureAICompletionsModelMistral(AzureAICompletionsModel):
-    def __init__(self, credential, model_name, endpoint, temperature=0):
-        super().__init__(
-            credential=credential,
-            model_name=model_name,
-            endpoint=endpoint,
-            temperature=temperature,
+ANTHROPIC_CLAUDE_HAIKU_35 = _safe_construct_optional(
+    Anthropic,
+    "ANTHROPIC_CLAUDE_HAIKU_35",
+    lambda: add_scoped_credentials_anthropic(
+        Anthropic(
+            model="claude-3-5-haiku@20241022",
+            project_id=str(cfg.gcp_vertex.project_id),
+            region="us-east5",
+            temperature=0,
         )
-
-    @property
-    def metadata(self):
-        return LLMMetadata(
-            context_window=120000,
-            num_output=2056,
-            is_chat_model=True,
-            is_function_calling_model=True,
-            model_name="mistral-large-2411",
-        )
-
-MISTRAL_LARGE = AzureAICompletionsModelMistral(
-    credential=cfg.azure_inference_mistral.api_key.get_secret_value(),  # type: ignore
-    model_name=str(cfg.azure_inference_mistral.model_name),  # type: ignore
-    endpoint=(  # type: ignore
-        "https://"
-        + str(cfg.azure_inference_mistral.default_deployment)
-        + "."
-        + str(cfg.azure_inference_mistral.region_name)
-        + ".models.ai.azure.com"
     ),
-    temperature=0,  # type: ignore
 )
 
-CEREBRAS_LLAMA_31_8B = Cerebras(
-    model="llama3.1-8b",
-    api_key=cfg.cerebras.api_key.get_secret_value(),
+if AzureAICompletionsModel is not None:
+    class AzureAICompletionsModelLlama(AzureAICompletionsModel):
+        def __init__(self, credential, model_name, endpoint, temperature=0):
+            super().__init__(
+                credential=credential,
+                model_name=model_name,
+                endpoint=endpoint,
+                temperature=temperature,
+            )
+
+        @property
+        def metadata(self):
+            return LLMMetadata(
+                context_window=120000,
+                num_output=1000,
+                is_chat_model=True,
+                is_function_calling_model=False,
+                model_name="Llama-3.3-70B-Instruct",
+            )
+
+    class AzureAICompletionsModelPhi4(AzureAICompletionsModel):
+        def __init__(self, credential, model_name, endpoint, temperature=0):
+            super().__init__(
+                credential=credential,
+                model_name=model_name,
+                endpoint=endpoint,
+                temperature=temperature,
+            )
+
+        @property
+        def metadata(self):
+            return LLMMetadata(
+                context_window=14000,
+                num_output=1000,
+                is_chat_model=True,
+                is_function_calling_model=False,
+                model_name="Phi-4",
+            )
+
+    class AzureAICompletionsModelR1(AzureAICompletionsModel):
+        def __init__(self, credential, model_name, endpoint, temperature=0):
+            super().__init__(
+                credential=credential,
+                model_name=model_name,
+                endpoint=endpoint,
+                temperature=temperature,
+            )
+
+        @property
+        def metadata(self):
+            return LLMMetadata(
+                context_window=120000,
+                num_output=8000,
+                is_chat_model=True,
+                is_function_calling_model=False,
+                model_name="Deepseek-R1",
+            )
+
+    class AzureAICompletionsModelMistral(AzureAICompletionsModel):
+        def __init__(self, credential, model_name, endpoint, temperature=0):
+            super().__init__(
+                credential=credential,
+                model_name=model_name,
+                endpoint=endpoint,
+                temperature=temperature,
+            )
+
+        @property
+        def metadata(self):
+            return LLMMetadata(
+                context_window=120000,
+                num_output=2056,
+                is_chat_model=True,
+                is_function_calling_model=True,
+                model_name="mistral-large-2411",
+            )
+else:
+    AzureAICompletionsModelLlama = None  # type: ignore[assignment]
+    AzureAICompletionsModelPhi4 = None  # type: ignore[assignment]
+    AzureAICompletionsModelR1 = None  # type: ignore[assignment]
+    AzureAICompletionsModelMistral = None  # type: ignore[assignment]
+
+AZURE_LLAMA33_70B = _safe_construct_optional(
+    AzureAICompletionsModelLlama,
+    "AZURE_LLAMA33_70B",
+    lambda: AzureAICompletionsModelLlama(
+        credential=cfg.azure_inference_llama33.api_key.get_secret_value(),  # type: ignore[arg-type]
+        model_name=str(cfg.azure_inference_llama33.model_name),  # type: ignore[arg-type]
+        endpoint=(
+            "https://"
+            + str(cfg.azure_inference_llama33.default_deployment)
+            + "."
+            + str(cfg.azure_inference_llama33.region_name)
+            + ".models.ai.azure.com"
+        ),
+        temperature=0,  # type: ignore[arg-type]
+    ),
 )
 
-CEREBRAS_LLAMA_33_70B = Cerebras(
-    model="llama-3.3-70b",
-    api_key=cfg.cerebras.api_key.get_secret_value(),
-    # Cerebras API doesn't support 'any' so we can't guarantee tool call
-    # API seems to want 'required', which may be a way to fix this
-    # https://inference-docs.cerebras.ai/api-reference/chat-completions#param-tool-choice
-    is_function_calling_model=False,
-    context_window=8000,
+AZURE_PHI4 = _safe_construct_optional(
+    AzureAICompletionsModelPhi4,
+    "AZURE_PHI4",
+    lambda: AzureAICompletionsModelPhi4(
+        credential=cfg.azure_inference_phi4.api_key.get_secret_value(),  # type: ignore[arg-type]
+        model_name=str(cfg.azure_inference_phi4.model_name),  # type: ignore[arg-type]
+        endpoint=(
+            "https://"
+            + str(cfg.azure_inference_phi4.default_deployment)
+            + "."
+            + str(cfg.azure_inference_phi4.region_name)
+            + ".models.ai.azure.com"
+        ),
+        temperature=0,  # type: ignore[arg-type]
+    ),
+)
+
+AZURE_R1 = _safe_construct_optional(
+    AzureAICompletionsModelR1,
+    "AZURE_R1",
+    lambda: AzureAICompletionsModelR1(
+        credential=cfg.azure_inference_r1.api_key.get_secret_value(),  # type: ignore[arg-type]
+        model_name=str(cfg.azure_inference_r1.model_name),  # type: ignore[arg-type]
+        endpoint=(
+            "https://"
+            + str(cfg.azure_inference_r1.default_deployment)
+            + "."
+            + str(cfg.azure_inference_r1.region_name)
+            + ".models.ai.azure.com"
+        ),
+        temperature=0,  # type: ignore[arg-type]
+    ),
+)
+
+MISTRAL_LARGE = _safe_construct_optional(
+    AzureAICompletionsModelMistral,
+    "MISTRAL_LARGE",
+    lambda: AzureAICompletionsModelMistral(
+        credential=cfg.azure_inference_mistral.api_key.get_secret_value(),  # type: ignore[arg-type]
+        model_name=str(cfg.azure_inference_mistral.model_name),  # type: ignore[arg-type]
+        endpoint=(
+            "https://"
+            + str(cfg.azure_inference_mistral.default_deployment)
+            + "."
+            + str(cfg.azure_inference_mistral.region_name)
+            + ".models.ai.azure.com"
+        ),
+        temperature=0,  # type: ignore[arg-type]
+    ),
+)
+
+CEREBRAS_LLAMA_31_8B = _safe_construct_optional(
+    Cerebras,
+    "CEREBRAS_LLAMA_31_8B",
+    lambda: Cerebras(
+        model="llama3.1-8b",
+        api_key=cfg.cerebras.api_key.get_secret_value(),
+    ),
+)
+
+CEREBRAS_LLAMA_33_70B = _safe_construct_optional(
+    Cerebras,
+    "CEREBRAS_LLAMA_33_70B",
+    lambda: Cerebras(
+        model="llama-3.3-70b",
+        api_key=cfg.cerebras.api_key.get_secret_value(),
+        is_function_calling_model=False,
+        context_window=8000,
+    ),
 )
 
 def _construct_azure_openai_llm(name: str, llm_config: AzureOpenAILLM) -> AzureOpenAI:
@@ -730,19 +880,21 @@ def load_configured_llms(config: Settings) -> T.Dict[str, FunctionCallingLLM]:
             raise
     return _dynamically_loaded_llms
 
-# When you add model, make sure all tests pass successfully
+# When adding a model, keep the registry and tests in sync.
 LLMs = {
-    # 🚀 硅基流动API模型 - 修正版本号以匹配实际模型
-    "Qwen2_5-7b": Qwen_2_5_7b,        # Qwen2.5-7B模型 (实际是Qwen/Qwen2.5-7B-Instruct)
-    "Qwen2-7b": Qwen_2_7b,            # Qwen2-7B模型 (实际是Qwen/Qwen2-7B-Instruct) 🔥 新增支持
-    "DeepSeek-R1-32b": Deepseek_R1_32b,   # DeepSeek R1 32B模型 
-    "Qwen2.5-72b": Qwen_2_5_72b,      # Qwen2.5-72B模型 (实际是Qwen/Qwen2.5-72B-Instruct)
+    # SiliconFlow-hosted models.
+    "Qwen2_5-7b": Qwen_2_5_7b,
+    "Qwen2-7b": Qwen_2_7b,
+    "DeepSeek-R1-32b": Deepseek_R1_32b,
+    "Qwen2.5-72b": Qwen_2_5_72b,
     
-    # 🚀 gaochao API模型
-    "gpt-4o-mini": GPT4o_mini,         # GPT-4o-mini模型
+    # Gaochao-backed OpenAI-compatible model.
+    "gpt-4o-mini": GPT4o_mini,
     
-    **LOCAL_MODELS,  # 保留本地模型配置
+    **LOCAL_MODELS,
 }
+
+LLMs = {name: llm for name, llm in LLMs.items() if llm is not None}
 
 LLMs.update(load_configured_llms(cfg))
 
@@ -780,21 +932,24 @@ def get_tokenizer(
     ],
     list[int],
 ]:
-    # 🚀 GPT-4o-mini模型使用OpenAI tokenizer
+    # GPT-4o-mini uses the OpenAI tokenizer.
     if name == "gpt-4o-mini":
         return tiktoken.encoding_for_model("gpt-4o-mini").encode
     
-    # 🚀 本地模型使用GPT-4o-mini tokenizer作为默认
+    # Local OpenAI-like models default to the GPT-4o-mini tokenizer.
     if name in LOCAL_MODELS:
         return tiktoken.encoding_for_model("gpt-4o-mini").encode
     
-    # 🚀 硅基流动模型：Qwen系列和DeepSeek使用专用Qwen tokenizer
+    # Qwen and DeepSeek SiliconFlow models use the Qwen tokenizer when available.
     if name in ["Qwen2_5-7b", "Qwen2-7b", "Qwen2.5-72b", "DeepSeek-R1-32b"]:
-        return _qwen_tokenizer.encode
+        tokenizer = _get_qwen_tokenizer()
+        if tokenizer is not None:
+            return tokenizer.encode
+        return tiktoken.get_encoding("cl100k_base").encode
         
     raise ValueError(f"Invalid tokenizer specified: {name}. Available models: {list(LLMs.keys())}")
 
 if __name__ == "__main__":
-    # 测试获取LLM名称
+    # Smoke-test the model registry.
     print(f"Available models: {list(LLMs.keys())}")
     print(f"Qwen 7B model: {get_llm_name(Qwen_2_5_7b)}")

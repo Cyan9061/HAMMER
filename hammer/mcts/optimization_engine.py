@@ -1,12 +1,5 @@
 """
-#hammer/mcts/optimization_engine.py
-真正的MCTS优化引擎实现
-
-主要修改：
-1. 去掉GPT模拟评估，改为真实评估回调
-2. 简化MCTS调用逻辑
-3. 保持现有的图记忆系统
-4. 删除不必要的复杂代码
+True MCTS optimization engine implementation.
 """
 
 import time
@@ -20,7 +13,7 @@ import os
 import json
 import hashlib
 
-# 导入增强的三层图记忆系统
+# Import the enhanced three-layer graph-memory system.
 from .kb_manager import (
     GraphMemoryRAGMCTS,
     QAExecutionNode,
@@ -28,11 +21,11 @@ from .kb_manager import (
 )
 
 class OptimizationEngine(ABC):
-    """优化引擎的抽象基类"""
+    """Abstract base class for optimization engines."""
     
     @abstractmethod
     def suggest_parameters(self, trial: optuna.Trial, components: T.List[str]) -> T.Dict[str, T.Any]:
-        """建议参数配置"""
+        """Suggest a parameter configuration."""
         pass
 
 class EnhancedMCTSOptimizationEngine(OptimizationEngine):
@@ -44,26 +37,26 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
         self.api_base = api_base
         self.experiment_id = experiment_id or self._generate_experiment_id()
         
-        # 初始化三层图记忆系统
+        # Initialize the three-layer graph-memory system.
         graph_memory_path = f"Experiment/graph_memory/{self.experiment_id}"
         self.graph_memory = GraphMemoryRAGMCTS(storage_path=graph_memory_path)
         
-        # 迁移旧知识库（如果提供）
+        # Migrate an old-format knowledge base if one is provided.
         if existing_knowledge_base:
             self._migrate_old_knowledge_base(existing_knowledge_base)
         
-        # 初始化洞察智能体
+        # Initialize the insight agent.
         self.insight_agent = InsightAgent(
             api_key=self.api_key,
             api_base=self.api_base
         )
         
-        # MCTS配置参数
+        # MCTS configuration.
         self.mcts_iterations = 1000
         self.current_search_idx = 0
         self.max_searches = 1000
         
-        # 真实评估回调 - 由外部设置
+        # Real-evaluation callback registered externally.
         self.evaluation_callback = None
         
         logger.info(f"🚀 Enhanced MCTS Optimization Engine initialized")
@@ -71,68 +64,72 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
         logger.info(f"🧠 Graph memory: {self.graph_memory.get_memory_stats()}")
 
     def set_evaluation_callback(self, callback: T.Callable[[T.Dict[str, T.Any]], float]):
-        """设置真实评估回调函数"""
+        """Register the real-evaluation callback."""
         self.evaluation_callback = callback
         logger.info("✅ Real evaluation callback set")
 
     def suggest_parameters(self) -> T.Dict[str, T.Any]:
-        """使用真正的MCTS建议参数配置"""
+        """Suggest parameters using the real MCTS search loop."""
         if self.evaluation_callback is None:
             logger.error("❌ Evaluation callback not set! Cannot perform MCTS search.")
             return self._get_default_config()
         
         if self.current_search_idx >= self.max_searches:
-            logger.warning(f"已完成所有{self.max_searches}次搜索，返回默认配置")
+            logger.warning("All %s searches are complete; returning the default configuration", self.max_searches)
             return self._get_default_config()
         
-        logger.info(f"🔄 开始第{self.current_search_idx+1}/{self.max_searches}次真正的MCTS参数搜索")
+        logger.info(
+            "Starting real MCTS parameter search %s/%s",
+            self.current_search_idx + 1,
+            self.max_searches,
+        )
         
-        # 执行真正的MCTS搜索
+        # Run the MCTS search.
         best_config = self._execute_true_mcts_search()
         
-        # 应用参数增强（保持与现有系统的兼容性）
+        # Add compatibility defaults expected by the rest of the system.
         enhanced_params = self._ensure_required_params(best_config)
         
-        # 更新状态
+        # Advance search state.
         self.current_search_idx += 1
         
         return enhanced_params
     
     def _execute_true_mcts_search(self) -> T.Dict[str, T.Any]:
-        """执行真正的MCTS搜索"""
+        """Execute the real MCTS search."""
         from .hierarchical_search import TrueMCTS, RAGSearchSpace
         
-        # 创建搜索空间
+        # Build the search space.
         search_space = self._build_search_space_from_config()
         
-        # Debug: 记录当前内存状态
+        # Debug: record the current memory state.
         memory_stats = self.graph_memory.get_memory_stats()
         logger.info(f"🧠 Pre-search memory state: {memory_stats['config_layer']['configurations']} configs, "
                 f"{memory_stats['insight_layer']['insights']} insights")
         
-        # 创建真正的MCTS实例，传入知识库和洞察智能体
+        # Build the TrueMCTS instance and pass in the knowledge base and insight agent.
         mcts_instance = TrueMCTS(
             search_space=search_space,
             evaluation_callback=self.evaluation_callback,
             exploration_constant=1.414,
             max_iterations=self.mcts_iterations,
-            graph_memory=self.graph_memory,  # 🔥 传入知识库
-            insight_agent=self.insight_agent  # 🔥 传入洞察智能体
+            graph_memory=self.graph_memory,
+            insight_agent=self.insight_agent
         )
         
-        # 执行搜索
+        # Execute search.
         best_config = mcts_instance.search()
         
-        logger.info(f"✅ GPT-guided MCTS搜索完成")
+        logger.info("GPT-guided MCTS search completed")
         return best_config
     
     def record_complete_evaluation(self, params: T.Dict[str, T.Any], metrics: T.Dict[str, T.Any], 
                                 qa_execution_logs: T.List[T.Dict[str, T.Any]]):
-        """记录完整的评估结果"""
-        logger.info(f"🧠 ===== 开始记录完整评估到三层图记忆系统 =====")
-        logger.info(f"📊 输入数据统计: {len(qa_execution_logs)} QA executions")
+        """Record the complete evaluation into the graph-memory system."""
+        logger.info("===== Recording complete evaluation into the three-layer graph-memory system =====")
+        logger.info("Input QA execution count: %s", len(qa_execution_logs))
         
-        # 处理空日志情况
+        # Handle empty-log cases.
         if len(qa_execution_logs) == 0:
             logger.warning("⚠️ QA execution logs are empty, will create placeholder QA records for config tracking")
             
@@ -156,95 +153,108 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
             qa_execution_logs = [placeholder_qa_log]
             logger.info("✅ Created 1 placeholder QA record for config tracking")
         
-        # Debug: 记录内存状态
+        # Debug: record pre-update memory stats.
         memory_stats_before = self.graph_memory.get_memory_stats()
-        logger.info(f"📊 ===== 记录前图记忆状态 =====")
-        logger.info(f"   Query Layer: {memory_stats_before['query_layer']['qa_executions']} QA executions")
-        logger.info(f"   Config Layer: {memory_stats_before['config_layer']['configurations']} configurations")
-        logger.info(f"                {memory_stats_before['config_layer']['config_relationships']} relationships")  
-        logger.info(f"   Insight Layer: {memory_stats_before['insight_layer']['insights']} insights")
-        logger.info(f"                 {memory_stats_before['insight_layer']['insight_relationships']} relationships")
-        logger.info(f"📊 ===== 记录前状态统计完成 =====")
+        logger.info("===== Pre-record graph-memory state =====")
+        logger.info("   Query Layer: %s QA executions", memory_stats_before['query_layer']['qa_executions'])
+        logger.info("   Config Layer: %s configurations", memory_stats_before['config_layer']['configurations'])
+        logger.info("                %s relationships", memory_stats_before['config_layer']['config_relationships'])
+        logger.info("   Insight Layer: %s insights", memory_stats_before['insight_layer']['insights'])
+        logger.info("                 %s relationships", memory_stats_before['insight_layer']['insight_relationships'])
+        logger.info("===== Finished pre-record state summary =====")
         
-        # 转换QA日志为QAExecutionNode对象
+        # Convert QA logs into QAExecutionNode objects.
         qa_executions = []
         config_id = self._generate_config_id(params)
-        logger.info(f"🔑 生成config_id: {config_id}")
-        logger.info(f"🔑 配置参数摘要: {json.dumps({k: v for k, v in params.items() if k in ['retrieval_method', 'template_name', 'reranker_enabled', 'hyde_enabled']}, ensure_ascii=False)}")
+        logger.info("Generated config_id: %s", config_id)
+        logger.info(
+            "Config summary: %s",
+            json.dumps({k: v for k, v in params.items() if k in ['retrieval_method', 'template_name', 'reranker_enabled', 'hyde_enabled']}, ensure_ascii=False),
+        )
         
-        logger.info(f"🔄 开始转换 {len(qa_execution_logs)} 个QA日志为QAExecutionNode...")
+        logger.info("Converting %s QA logs into QAExecutionNode objects", len(qa_execution_logs))
         for i, qa_log in enumerate(qa_execution_logs):
             qa_execution = self._convert_qa_log_to_node(qa_log, config_id, i)
             qa_executions.append(qa_execution)
-            if i < 3:  # 只显示前3个的详细信息
-                logger.info(f"   QA{i+1}: {qa_execution.qa_id} -> F1={qa_execution.f1_score:.3f}, question='{qa_execution.question[:50]}...'")
-        logger.info(f"✅ QA日志转换完成: {len(qa_executions)} QAExecutionNodes")
+            if i < 3:
+                logger.info(
+                    "   QA%s: %s -> F1=%.3f, question='%s...'",
+                    i + 1,
+                    qa_execution.qa_id,
+                    qa_execution.f1_score,
+                    qa_execution.question[:50],
+                )
+        logger.info("Converted QA logs successfully: %s QAExecutionNodes", len(qa_executions))
         
-        # 添加到三层图记忆系统
-        logger.info(f"💾 开始添加到图记忆系统...")
+        # Add data into the graph-memory system.
+        logger.info("Adding evaluation data into graph memory")
         config_node = self.graph_memory.add_complete_evaluation(params, qa_executions)
-        logger.info(f"✅ 图记忆系统更新完成")
+        logger.info("Graph memory update completed")
         
-        # Debug: 记录内存状态
+        # Debug: record post-update memory stats.
         memory_stats_after = self.graph_memory.get_memory_stats()
-        logger.info(f"📊 ===== 记录后图记忆状态 =====")
+        logger.info("===== Post-record graph-memory state =====")
         logger.info(f"   Query Layer: {memory_stats_after['query_layer']['qa_executions']} QA executions (+{memory_stats_after['query_layer']['qa_executions'] - memory_stats_before['query_layer']['qa_executions']})")
         logger.info(f"   Config Layer: {memory_stats_after['config_layer']['configurations']} configurations (+{memory_stats_after['config_layer']['configurations'] - memory_stats_before['config_layer']['configurations']})")
         logger.info(f"                {memory_stats_after['config_layer']['config_relationships']} relationships (+{memory_stats_after['config_layer']['config_relationships'] - memory_stats_before['config_layer']['config_relationships']})")
         logger.info(f"   Insight Layer: {memory_stats_after['insight_layer']['insights']} insights (+{memory_stats_after['insight_layer']['insights'] - memory_stats_before['insight_layer']['insights']})")
         logger.info(f"                 {memory_stats_after['insight_layer']['insight_relationships']} relationships (+{memory_stats_after['insight_layer']['insight_relationships'] - memory_stats_before['insight_layer']['insight_relationships']})")
-        logger.info(f"📊 ===== 记录后状态统计完成 =====")
+        logger.info("===== Finished post-record state summary =====")
         
-        # 简化的insight生成
+        # Generate insights.
         existing_insights = list(self.graph_memory.insight_layer.nodes.values())
-        logger.info(f"🧠 ===== 开始Insight生成流程 =====")
-        logger.info(f"📚 当前已有insights: {len(existing_insights)}")
-        logger.info(f"🎯 开始为config {config_id} 生成新insights...")
+        logger.info("===== Starting insight generation =====")
+        logger.info("Existing insights: %s", len(existing_insights))
+        logger.info("Generating new insights for config %s", config_id)
         
-        # 生成新洞察
+        # Generate new insights.
         new_insights = self.insight_agent.extract_insights_from_evaluation(
             config_node, qa_executions, existing_insights
         )
         
-        # 添加新洞察到洞察层
+        # Add new insights to the insight layer.
         if new_insights:
-            logger.info(f"💡 InsightAgent返回了 {len(new_insights)} 个新insights")
+            logger.info("InsightAgent returned %s new insights", len(new_insights))
             for i, insight in enumerate(new_insights):
-                logger.info(f"   Insight{i+1}: {insight.title} (置信度: {insight.confidence_score:.2f})")
+                logger.info("   Insight%s: %s (confidence: %.2f)", i + 1, insight.title, insight.confidence_score)
             
             self.graph_memory.insight_layer.add_insights(new_insights)
-            logger.info(f"✅ 已将 {len(new_insights)} 个新insights添加到insight层")
+            logger.info("Added %s new insights to the insight layer", len(new_insights))
         else:
-            logger.warning(f"⚠️ InsightAgent未生成任何新insights")
+            logger.warning("InsightAgent did not generate any new insights")
         
-        # 最终内存状态检查
+        # Final memory-state summary.
         memory_stats_final = self.graph_memory.get_memory_stats()
-        logger.info(f"📊 ===== 最终图记忆状态 =====")
+        logger.info("===== Final graph-memory state =====")
         logger.info(f"   Total QAs: {memory_stats_final['query_layer']['qa_executions']}")
         logger.info(f"   Total Configs: {memory_stats_final['config_layer']['configurations']}")  
         logger.info(f"   Total Insights: {memory_stats_final['insight_layer']['insights']}")
         logger.info(f"   Config F1: {config_node.avg_f1_score:.4f}")
         logger.info(f"   New insights: {len(new_insights) if new_insights else 0}")
-        logger.info(f"📊 ===== 最终状态统计完成 =====")
+        logger.info("===== Finished final state summary =====")
         
-        logger.info(f"✅ 完整评估记录完成: Config F1={config_node.avg_f1_score:.4f}, {len(new_insights) if new_insights else 0} new insights extracted")
-        logger.info(f"🧠 ===== 三层图记忆系统记录完成 =====")
+        logger.info(
+            "Complete evaluation recorded: Config F1=%.4f, %s new insights extracted",
+            config_node.avg_f1_score,
+            len(new_insights) if new_insights else 0,
+        )
+        logger.info("===== Finished recording into the three-layer graph-memory system =====")
 
     def _migrate_old_knowledge_base(self, old_kb: T.Dict[str, T.Any]):
-        """迁移旧知识库格式到新的三层系统"""
+        """Migrate an old knowledge-base format into the new three-layer system."""
         logger.info(f"🔄 Migrating old knowledge base...")
         
         try:
             configs = old_kb.get('configs', [])
             
-            # 处理旧的字典格式和新的列表格式
+            # Handle both dict-based and list-based legacy layouts.
             if isinstance(configs, dict):
                 configs = list(configs.values())
             
-            # 转换旧记录到新格式
+            # Convert legacy records into the new format.
             for i, old_record in enumerate(configs):
                 if isinstance(old_record, dict) and 'config' in old_record:
-                    # 创建简化的QA执行记录
+                    # Create a simplified QA execution record.
                     qa_execution = QAExecutionNode(
                         qa_id=f"migrated_{self.experiment_id}_{i}",
                         config_id=self._generate_config_id(old_record['config']),
@@ -260,7 +270,7 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
                         hyde_enabled=old_record['config'].get('hyde_enabled', False)
                     )
                     
-                    # 添加到图记忆
+                    # Add it to graph memory.
                     self.graph_memory.query_layer.add_qa_execution(qa_execution)
             
             logger.info(f"✅ Successfully migrated {len(configs)} old records to new format")
@@ -269,8 +279,8 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
             logger.error(f"❌ Failed to migrate old knowledge base: {e}")
     
     def _convert_qa_log_to_node(self, qa_log: T.Dict[str, T.Any], config_id: str, index: int) -> QAExecutionNode:
-        """转换QA执行日志为QAExecutionNode"""
-        # 确保QA ID全局唯一
+        """Convert a QA execution log into a QAExecutionNode."""
+        # Ensure the QA id is globally unique.
         current_qa_count = len(self.graph_memory.query_layer.nodes)
         global_qa_index = current_qa_count + index
         
@@ -278,12 +288,12 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
             qa_id=f"{self.experiment_id}_qa_{global_qa_index}",
             config_id=config_id,
             
-            # 基本QA信息
+            # Basic QA fields.
             question=qa_log.get('question', 'Unknown question'),
             ground_truth_answer=qa_log.get('ground_truth', 'Unknown answer'),
             predicted_answer=qa_log.get('predicted_answer', 'Unknown prediction'),
             
-            # 性能指标
+            # Metrics.
             f1_score=qa_log.get('f1_score', 0.0),
             exact_match=qa_log.get('exact_match', False),
             retrieval_precision=qa_log.get('retrieval_precision', 0.0),
@@ -291,45 +301,45 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
             context_overlap=qa_log.get('context_overlap', 0.0),
             answer_relevance=qa_log.get('answer_relevance', 0.0),
             
-            # RAG流程详情
+            # RAG pipeline details.
             raw_query=qa_log.get('raw_query', None),
             
-            # 查询分解
+            # Query decomposition.
             query_decomposition_enabled=qa_log.get('query_decomposition_enabled', False),
             decomposed_queries=qa_log.get('decomposed_queries', []),
             query_decomposition_llm=qa_log.get('query_decomposition_llm', None),
             decomposition_time=qa_log.get('decomposition_time', 0.0),
             
-            # HyDE增强
+            # HyDE settings.
             hyde_enabled=qa_log.get('hyde_enabled', False),
             hyde_query=qa_log.get('hyde_query', None),
             hyde_llm=qa_log.get('hyde_llm', None),
             hyde_time=qa_log.get('hyde_time', 0.0),
             
-            # 检索配置
+            # Retrieval config.
             embedding_model=qa_log.get('embedding_model', 'unknown'),
             retrieval_method=qa_log.get('retrieval_method', 'unknown'),
             retrieval_top_k=qa_log.get('retrieval_top_k', 10),
             hybrid_bm25_weight=qa_log.get('hybrid_bm25_weight', 0.5),
             retrieval_time=qa_log.get('retrieval_time', 0.0),
             
-            # 融合处理
+            # Fusion settings.
             fusion_enabled=qa_log.get('fusion_enabled', False),
             fusion_mode=qa_log.get('fusion_mode', None),
             fusion_time=qa_log.get('fusion_time', 0.0),
             
-            # 重排序
+            # Reranking.
             reranker_enabled=qa_log.get('reranker_enabled', False),
             reranker_llm=qa_log.get('reranker_llm', None),
             reranker_top_k=qa_log.get('reranker_top_k', 5),
             reranking_time=qa_log.get('reranking_time', 0.0),
             
-            # 额外上下文
+            # Additional context.
             additional_context_enabled=qa_log.get('additional_context_enabled', False),
             additional_context_num_nodes=qa_log.get('additional_context_num_nodes', 0),
             additional_context_time=qa_log.get('additional_context_time', 0.0),
             
-            # 最终结果
+            # Final assembled output.
             final_context=qa_log.get('final_context', ''),
             context_assembly_time=qa_log.get('context_assembly_time', 0.0),
             
@@ -338,7 +348,7 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
             few_shot_examples=qa_log.get('few_shot_examples', []),
             few_shot_retrieval_time=qa_log.get('few_shot_retrieval_time', 0.0),
             
-            # 合成
+            # Response synthesis.
             response_synthesizer_llm=qa_log.get('response_synthesizer_llm', 'unknown'),
             template_name=qa_log.get('template_name', 'unknown'),
             final_prompt=qa_log.get('final_prompt', ''),
@@ -348,26 +358,26 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
         )
     
     def save_knowledge_base(self, file_path: str):
-        """保存MCTS知识库到指定文件路径"""
-        logger.info(f"🧠 保存图记忆系统到: {file_path}")
+        """Save the MCTS knowledge base to the requested file path."""
+        logger.info("Saving graph memory to %s", file_path)
         
         try:
-            # 图记忆系统有自己的持久化机制
+            # Graph memory has its own persistence mechanism.
             self.graph_memory.save_all_layers()
             
-            # 为了兼容性，也可以生成legacy格式
+            # Also emit a legacy-compatible format for compatibility.
             legacy_kb_data = self._get_legacy_knowledge_base_format()
             
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(legacy_kb_data, f, ensure_ascii=False, indent=2)
-            logger.info(f"💾 兼容性知识库已保存到: {file_path}")
-            logger.info(f"💾 图记忆系统已保存到: {self.graph_memory.storage_path}")
+            logger.info("Saved compatibility knowledge base to %s", file_path)
+            logger.info("Saved graph memory to %s", self.graph_memory.storage_path)
         except Exception as e:
-            logger.error(f"❌ 保存知识库时发生错误: {e}", exc_info=True)
+            logger.error("Error while saving the knowledge base: %s", e, exc_info=True)
 
     def _get_legacy_knowledge_base_format(self) -> T.Dict[str, T.Any]:
-        """将图记忆数据转换为legacy知识库格式以保持兼容性"""
+        """Convert graph-memory data into the legacy knowledge-base format."""
         try:
             configs = {}
             for config_id, config_node in self.graph_memory.config_layer.nodes.items():
@@ -404,7 +414,7 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
                 }
             }
         except Exception as e:
-            logger.error(f"❌ 转换legacy格式失败: {e}")
+            logger.error("Failed to convert to the legacy format: %s", e)
             return {
                 'experiment_id': self.experiment_id,
                 'configs': {},
@@ -413,23 +423,23 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
     
     @property
     def knowledge_base(self) -> T.Dict[str, T.Any]:
-        """提供向后兼容的knowledge_base属性"""
+        """Backward-compatible `knowledge_base` property."""
         return self._get_legacy_knowledge_base_format()
 
     def _build_search_space_from_config(self):
-        """构建MCTS搜索空间"""
+        """Build the MCTS search space."""
         from .hierarchical_search import RAGSearchSpace
         
-        # 使用默认搜索空间
+        # Use the default search space.
         return RAGSearchSpace()
     
     def _ensure_required_params(self, params: T.Dict[str, T.Any]) -> T.Dict[str, T.Any]:
-        """确保所有必需参数都存在，使用与TPE相同的逻辑"""
-        # 设置默认rag_mode
+        """Ensure all required parameters exist, using the same logic as TPE."""
+        # Set the default rag_mode.
         final_params = {"rag_mode": "rag"}
         final_params.update(params)
         
-        # 使用优化配置作为默认值
+        # Use the optimization config as the default source.
         defaults = {
             "enforce_full_evaluation": True,
             "template_name": final_params.get("template_name", "CoT"),
@@ -441,7 +451,7 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
             "splitter_chunk_overlap_frac": final_params.get("splitter_overlap", 0.1),
         }
         
-        # 处理chunk size参数
+        # Normalize the chunk-size parameter.
         if "splitter_chunk_size" in final_params:
             import math
             chunk_size = final_params["splitter_chunk_size"]
@@ -455,11 +465,11 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
         else:
             defaults["splitter_chunk_exp"] = 8
         
-        # 添加条件参数
+        # Add conditional parameters.
         if final_params.get("retrieval_method") == "hybrid":
             defaults["rag_hybrid_bm25_weight"] = final_params.get("hybrid_bm25_weight", 0.5)
             
-        # 查询分解参数（强制开启）
+        # Query decomposition parameters (forced on by default).
         if final_params.get("query_decomposition_enabled", True):
             defaults["rag_query_decomposition_enabled"] = True
             defaults["rag_query_decomposition_num_queries"] = final_params.get("query_decomposition_num_queries", 4)
@@ -468,8 +478,8 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
         else:
             defaults["rag_query_decomposition_enabled"] = False
             
-        # Hyde参数（🔥 强制关闭HyDE以减少搜索空间）
-        # # Hyde参数（强制开启）
+        # HyDE parameters. Keep HyDE disabled here to reduce the search space.
+        # # HyDE parameters (forced on)
         # if final_params.get("hyde_enabled", True):
         #     defaults["hyde_enabled"] = True
         #     defaults["hyde_llm_name"] = final_params.get("hyde_llm", "Qwen2-7b")
@@ -477,22 +487,22 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
         #     defaults["hyde_enabled"] = False
         defaults["hyde_enabled"] = False
             
-        # Reranker参数
+        # Reranker parameters.
         defaults["reranker_enabled"] = True
         defaults["reranker_llm_name"] = final_params.get("reranker_llm", "Qwen2-7b")
         defaults["reranker_top_k"] = final_params.get("reranker_top_k", 5)
             
-        # 额外上下文参数（强制开启）
+        # Additional-context parameters (forced on by default).
         if final_params.get("additional_context_enabled", True):
             defaults["additional_context_enabled"] = True
             defaults["additional_context_num_nodes"] = final_params.get("additional_context_num_nodes", 5)
         else:
             defaults["additional_context_enabled"] = False
             
-        # Few-shot参数
+        # Few-shot parameters.
         defaults["few_shot_enabled"] = False
         
-        # 更新默认值
+        # Apply default values.
         for key, value in defaults.items():
             if key not in final_params:
                 final_params[key] = value
@@ -500,7 +510,7 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
         return final_params
     
     def _get_default_config(self) -> T.Dict[str, T.Any]:
-        """获取默认配置"""
+        """Return the default configuration."""
         return {
             "rag_mode": "rag",
             "splitter_method": "sentence",
@@ -514,7 +524,7 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
             "query_decomposition_llm": "Qwen2-7b",
             "fusion_mode": "simple",
             # "hyde_enabled": True,  
-            "hyde_enabled": False,#关闭HyDE
+            "hyde_enabled": False,  # Keep HyDE disabled by default.
             "hyde_llm": "Qwen2-7b",
             "reranker_enabled": True,
             "additional_context_enabled": True,
@@ -525,7 +535,7 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
         }
     
     def _generate_experiment_id(self) -> str:
-        """生成实验标识符"""
+        """Generate the experiment identifier."""
         import sys
         import os
         current_time = time.time()
@@ -544,12 +554,12 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
         """Get current graph memory statistics"""
         return self.graph_memory.get_memory_stats()
         
-    # 保持原方法以兼容性
+    # Keep the legacy method for compatibility.
     def record_real_evaluation(self, params: T.Dict[str, T.Any], metrics: T.Dict[str, T.Any]):
         """Legacy method for backward compatibility"""
         logger.warning("⚠️ Using legacy record_real_evaluation method. Consider upgrading to record_complete_evaluation.")
         
-        # 创建简化的QA执行日志
+        # Create a simplified QA execution log.
         qa_log = {
             'question': 'Legacy evaluation',
             'ground_truth': 'Unknown',
@@ -562,7 +572,7 @@ class EnhancedMCTSOptimizationEngine(OptimizationEngine):
         
         self.record_complete_evaluation(params, metrics, [qa_log])
 
-# # 保持向后兼容性
+# # Keep backward compatibility
 # class MCTSOptimizationEngine(EnhancedMCTSOptimizationEngine):
 #     """Legacy MCTS optimization engine for backward compatibility"""
     

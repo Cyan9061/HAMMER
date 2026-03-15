@@ -1,11 +1,11 @@
 
 """
-SiliconFlow API集成的LLM实现
-支持线程安全的API key轮询分配，实现高并发调用
+SiliconFlow-backed LLM implementation with thread-safe API key rotation.
 """
 
 import time
 import itertools
+import os
 import requests
 import threading
 from typing import Any, Dict, Optional, Sequence
@@ -19,40 +19,42 @@ from llama_index.core.base.llms.types import (
 )
 from llama_index.core.llms.callbacks import llm_completion_callback
 from llama_index.core.llms import CustomLLM
-from llama_index.core.bridge.pydantic import Field
+from llama_index.core.bridge.pydantic import Field, PrivateAttr
 
 from hammer.logger import logger
 
 class SiliconFlowLLM(CustomLLM):
     """
-    SiliconFlow API的LLM实现，支持线程安全的API key轮询分配
-    并行度为API key数量 × 3
+    SiliconFlow API implementation with thread-safe key rotation.
+    Effective concurrency scales with the number of configured API keys.
     """
     
-    # API配置
-    api_keys: Sequence[str] = Field(description="SiliconFlow API keys列表")
-    model_name: str = Field(default="Qwen/Qwen2.5-7B-Instruct", description="模型名称")
-    api_endpoint: str = Field(default="https://api.siliconflow.cn/v1/chat/completions", description="API端点")
-    max_tokens: int = Field(default=8192, description="最大token数")
-    temperature: float = Field(default=0.7, description="温度参数")
-    top_p: float = Field(default=0.9, description="top_p参数")
-    max_retries: int = Field(default=3, description="最大重试次数")
-    timeout: int = Field(default=60, description="请求超时时间（秒）")
+    # API configuration
+    api_keys: Sequence[str] = Field(description="List of SiliconFlow API keys")
+    model_name: str = Field(default="Qwen/Qwen2.5-7B-Instruct", description="Model name")
+    api_endpoint: str = Field(default="https://api.siliconflow.cn/v1/chat/completions", description="API endpoint")
+    max_tokens: int = Field(default=8192, description="Maximum output tokens")
+    temperature: float = Field(default=0.7, description="Sampling temperature")
+    top_p: float = Field(default=0.9, description="Top-p sampling parameter")
+    max_retries: int = Field(default=3, description="Maximum retry attempts")
+    timeout: int = Field(default=60, description="Request timeout in seconds")
+    _key_cycler: Any = PrivateAttr()
+    _key_lock: Lock = PrivateAttr()
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # 初始化API key循环器（使用私有属性，不作为Field）
+        # Initialize key rotation state via private attrs rather than Pydantic fields.
         if self.api_keys:
             self._key_cycler = itertools.cycle(self.api_keys)
-            self._key_lock = Lock()  # 初始化锁
+            self._key_lock = Lock()
         else:
-            raise ValueError("api_keys不能为空")
+            raise ValueError("api_keys must not be empty")
     
     @property 
     def metadata(self) -> LLMMetadata:
-        """返回LLM元数据"""
+        """Return LLM metadata."""
         return LLMMetadata(
-            context_window=4096,  # 根据模型调整
+            context_window=4096,  # Tune per model if needed.
             num_output=self.max_tokens,
             is_chat_model=True,
             is_function_calling_model=False,
@@ -60,12 +62,12 @@ class SiliconFlowLLM(CustomLLM):
         )
     
     def _get_next_api_key(self) -> str:
-        """线程安全地获取下一个API key"""
+        """Return the next API key in a thread-safe way."""
         with self._key_lock:
             return next(self._key_cycler)
     
     def _make_api_request(self, messages: list, api_key: str) -> dict:
-        """发起单次API请求"""
+        """Execute a single API request."""
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
@@ -90,76 +92,92 @@ class SiliconFlowLLM(CustomLLM):
         if response.status_code == 200:
             response_json = response.json()
             
-            # 🔥 记录token使用到全局统计
+            # Record token usage in the shared tracker.
             from hammer.utils.simple_token_tracker import record_siliconflow_response
             record_siliconflow_response(response_json, self.model_name)
             
             return response_json
         elif response.status_code in [429, 500, 502, 503, 504]:
-            # 可重试错误
+            # Retryable server-side or throttling errors.
             raise requests.exceptions.RequestException(
                 f"API Rate Limit/Server Error [{response.status_code}]: {response.text[:200]}"
             )
         else:
-            # 不可重试错误
-            raise ValueError(f"API请求失败 [{response.status_code}]: {response.text[:200]}")
+            # Non-retryable client or protocol errors.
+            raise ValueError(f"API request failed [{response.status_code}]: {response.text[:200]}")
     
     def _predict_with_retry(self, messages: list) -> str:
-        """带重试机制的预测"""
+        """Run prediction with retry handling."""
         last_exception = None
         
         for attempt in range(self.max_retries):
             try:
-                # 获取API key
+                # Rotate across available API keys.
                 api_key = self._get_next_api_key()
                 
-                # 发起请求
+                # Execute the request.
                 result = self._make_api_request(messages, api_key)
                 
-                # 提取响应
+                # Extract the response payload.
                 response_content = result['choices'][0]['message']['content'].strip()
                 
-                logger.debug(f"API调用成功，使用key: {api_key[:20]}...，尝试次数: {attempt + 1}")
+                logger.debug(
+                    "SiliconFlow request succeeded with key %s... on attempt %s",
+                    api_key[:20],
+                    attempt + 1,
+                )
                 return response_content
                 
             except requests.exceptions.RequestException as e:
                 last_exception = e
                 if attempt < self.max_retries - 1:
-                    # 🔥 针对429限流错误使用更长的退避时间
+                    # Use a longer backoff window for rate-limit errors.
                     if "429" in str(e) or "TPM limit" in str(e) or "rate limit" in str(e).lower():
-                        sleep_time = min(10 + (5 * attempt), 60)  # 10s → 15s → 20s，最大60s
-                        logger.warning(f"检测到限流错误，{sleep_time:.2f}秒后重试 (第{attempt + 1}/{self.max_retries}次): {e}")
+                        sleep_time = min(10 + (5 * attempt), 60)
+                        logger.warning(
+                            "Rate limit detected; retrying in %.2fs (%s/%s): %s",
+                            sleep_time,
+                            attempt + 1,
+                            self.max_retries,
+                            e,
+                        )
                     else:
-                        sleep_time = 1.5 ** attempt  # 指数退避
-                        logger.warning(f"API请求失败，{sleep_time:.2f}秒后重试 (第{attempt + 1}/{self.max_retries}次): {e}")
+                        sleep_time = 1.5 ** attempt
+                        logger.warning(
+                            "API request failed; retrying in %.2fs (%s/%s): %s",
+                            sleep_time,
+                            attempt + 1,
+                            self.max_retries,
+                            e,
+                        )
                     time.sleep(sleep_time)
                 else:
-                    logger.error(f"API请求重试{self.max_retries}次均失败: {e}")
+                    logger.error("API request failed after %s retries: %s", self.max_retries, e)
                     
             except Exception as e:
                 last_exception = e
-                logger.error(f"API请求发生意外错误: {e}")
+                logger.error("Unexpected API request failure: %s", e)
                 break
         
-        # 如果所有重试都失败，返回错误信息
-        error_msg = f"API调用失败: {last_exception}"
+        # Return a structured error string after all retries are exhausted.
+        error_msg = f"API request failed: {last_exception}"
         logger.error(error_msg)
-        return f"[API调用失败] {error_msg}"
+        return f"[API request failed] {error_msg}"
     
     @llm_completion_callback()
     def complete(self, prompt: str, **kwargs: Any) -> CompletionResponse:
-        """完成文本生成（兼容llama_index接口）"""
-        # 转换为chat格式
+        """Run completion generation in the llama-index compatible format."""
+        # Convert to chat-style payload.
         messages = [{"role": "user", "content": prompt}]
         
-        # 调用API
+        # Execute the request.
         response_text = self._predict_with_retry(messages)
         
         return CompletionResponse(text=response_text)
     
     def chat(self, messages: Sequence[ChatMessage], **kwargs: Any) -> ChatResponse:
-        """聊天模式（兼容llama_index接口）"""
-        # 转换消息格式
+        """Run chat generation in the llama-index compatible format."""
+        # Convert message objects to API payloads.
         api_messages = []
         for msg in messages:
             api_messages.append({
@@ -167,23 +185,23 @@ class SiliconFlowLLM(CustomLLM):
                 "content": msg.content
             })
         
-        # 调用API
+        # Execute the request.
         response_text = self._predict_with_retry(api_messages)
         
-        # 直接返回ChatResponse，不使用callback装饰器避免pydantic错误
+        # Return ChatResponse directly to avoid callback/Pydantic issues.
         return ChatResponse(
             message=ChatMessage(role="assistant", content=response_text)
         )
     
     @llm_completion_callback()
     def stream_complete(self, prompt: str, **kwargs: Any):
-        """流式完成（暂不支持）"""
-        raise NotImplementedError("SiliconFlow LLM不支持流式输出")
+        """Streaming completion is not supported."""
+        raise NotImplementedError("SiliconFlow LLM does not support streaming output")
     
     @llm_completion_callback()
     def stream_chat(self, messages: Sequence[ChatMessage], **kwargs: Any):
-        """流式聊天（暂不支持）"""
-        raise NotImplementedError("SiliconFlow LLM不支持流式输出")
+        """Streaming chat is not supported."""
+        raise NotImplementedError("SiliconFlow LLM does not support streaming output")
 
 def create_siliconflow_llm(
     api_keys: Sequence[str],
@@ -193,17 +211,17 @@ def create_siliconflow_llm(
     **kwargs
 ) -> SiliconFlowLLM:
     """
-    创建SiliconFlow LLM实例的便捷函数
+    Convenience factory for SiliconFlowLLM.
     
     Args:
-        api_keys: API密钥列表
-        model_name: 模型名称
-        max_tokens: 最大token数
-        temperature: 温度参数
-        **kwargs: 其他参数
+        api_keys: API keys
+        model_name: Model name
+        max_tokens: Maximum output tokens
+        temperature: Sampling temperature
+        **kwargs: Additional keyword arguments
     
     Returns:
-        SiliconFlowLLM实例
+        SiliconFlowLLM instance
     """
     return SiliconFlowLLM(
         api_keys=api_keys,
@@ -213,28 +231,27 @@ def create_siliconflow_llm(
         **kwargs
     )
 
-# 从utils_getAPI.py导入API keys
 def get_api_keys():
-    """获取API keys"""
-    return [
-        "sk-syzfeyvsvrurqpbwpiwtwjbcmlkhtojngngopcqmasmmtfmz",
-        "sk-iaomffrqmsrqpupozhfrtfqnjqllormgheprxcxjuufoquaq",
-        "sk-nmdoohpnnawgpsbfutuolbqpqddtsqqhhsrdyzzsnqsfunuy",
-        "sk-fkvkjzfejsfcnzolxybcnbeubodbcxbczbuqnhtnqpfgyurp",
-        "sk-lavogswyitrwhyfxywaylfvhjwchqppcnhauoeouypigiaaf",
-        "sk-kpacfuoklmioauxqlqrpityhhbjarjqcpiknxleuvizduyxm",
-        "sk-sktrhqdgufgooboqbcvriatgpciockywxbrsqngsjzjehchh",
-        "sk-wkapiwrmbvxlwnwffjvzeausdlowdiohogdubzzkzgqgrddh",
-        "sk-piyqetdwcqqlqsgprbmmvmnetaqqmnorrmzdsqznmtzsznxd",
-        "sk-szbhnnmhpmfkkduuvymznhhewcfpgajyggzpjngbkgsbhjcv",
-        "sk-fxanyzqjnqjwevqrcqclpdekwfslpkyljjrvvelnmipgdotl",
-        "sk-ziseitejknrdtjybqrmsrhohoyloprglrskjoncwkhwcoqdd",
-        "sk-gegmwncxlqhgmvdoyrbytftvxmkekklqukpqdgwnynijskmz",
-        "sk-svcbtepfhczvctugfiboqumahybnwgfajjygncwvnwnuadqs",
-        "sk-gvgrtjtbehntvavqwwvyyswntlcmcnpjnvvazxmqpolnfazg",
-        "sk-qrmkkjcwuitbnqjqwwwqsvmgettmrmtfrkidxukfdkzcshpf",
-        "sk-kjrzdicvsosineegefgrpjeuqbvbmqfxhspcltbwfwpkznxy",
-        "sk-xqxjkftqpeacuzdresfszqcpjhmvashguthcxqggtxvhnbie",
-        "sk-sygrwnulmhdkqyykgweqshsonvhdemrytyzqtkawxbwbkhok",
-        "sk-tdvqsrvotngseasqtwvvdowiaozwafuqiohenoatwyqvttyz",
-    ]
+    """Read SiliconFlow API keys from environment variables first."""
+
+    def _split_env(value: str) -> list[str]:
+        return [key.strip() for key in value.split(",") if key.strip()]
+
+    keys: list[str] = []
+    for env_var in ("SILICONFLOW_API_KEYS", "SILICONFLOW_API_KEY", "ADDITIONAL_API_KEYS"):
+        env_value = os.getenv(env_var, "")
+        if env_value:
+            keys.extend(_split_env(env_value))
+
+    deduped: list[str] = []
+    seen = set()
+    for key in keys:
+        if key not in seen:
+            deduped.append(key)
+            seen.add(key)
+
+    if deduped:
+        return deduped
+
+    logger.warning("No SiliconFlow API keys detected; using a placeholder key to keep imports working.")
+    return ["EMPTY_SILICONFLOW_API_KEY"]
