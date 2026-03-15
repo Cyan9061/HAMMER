@@ -1,4 +1,4 @@
-# ⚒️ HAMMER: **Hierarchical Memory-guided Monte Carlo Tree Search for RAG System Optimization**
+# ⚒️ HAMMER: **Hierarchical Memory-guided Monte Carlo Tree Search for RAG System Optimization** (SIGMOD 2026)
 
 
 ## 🌟 Highlights
